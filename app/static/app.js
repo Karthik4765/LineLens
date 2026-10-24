@@ -37,6 +37,7 @@ print(find_pairs(values, 9))
     consoleOutput: byId("console-output"),
     consoleClear: byId("console-clear"),
     consoleExpand: byId("console-expand"),
+    stdinInput: byId("stdin-input"),
     editorPanel: document.querySelector(".editor-panel"),
     resultPanel: byId("result-panel"),
     resultBody: byId("result-body"),
@@ -44,6 +45,33 @@ print(find_pairs(values, 9))
     resultLoading: byId("result-loading"),
     resultContent: byId("result-content"),
     resultBadges: byId("result-badges"),
+    traceShowAll: byId("trace-show-all"),
+    traceNotice: byId("trace-notice"),
+    traceNoticeTitle: byId("trace-notice-title"),
+    traceNoticeText: byId("trace-notice-text"),
+    finalOutputCard: byId("final-output-card"),
+    finalOutputText: byId("final-output-text"),
+    copyOutput: byId("copy-output"),
+    tracePlayer: byId("trace-player"),
+    tracePosition: byId("trace-position"),
+    traceBack: byId("trace-back"),
+    traceNext: byId("trace-next"),
+    traceStep: byId("trace-step"),
+    traceLineChip: byId("trace-line-chip"),
+    traceCode: byId("trace-code"),
+    traceFunction: byId("trace-function"),
+    traceExplanation: byId("trace-explanation"),
+    traceErrorNote: byId("trace-error-note"),
+    traceValues: byId("trace-values"),
+    traceValueChips: byId("trace-value-chips"),
+    traceOutputWrap: byId("trace-output-wrap"),
+    traceOutput: byId("trace-output"),
+    memoryPanel: byId("memory-panel"),
+    memoryScopes: byId("memory-scopes"),
+    traceRuns: byId("trace-runs"),
+    traceRunsBody: byId("trace-runs-body"),
+    traceProgress: byId("trace-progress"),
+    traceProgressBar: byId("trace-progress-bar"),
     summaryText: byId("summary-text"),
     resultMeta: byId("result-meta"),
     lineList: byId("line-list"),
@@ -84,6 +112,9 @@ print(find_pairs(values, 9))
     running: false,
     activeLine: null,
     errorLine: null,
+    traceIndex: 0,
+    traceLine: null,
+    traceShowAll: false,
     lastRunError: null,
     lastExplain: null,
     authMode: "login",
@@ -266,6 +297,9 @@ print(find_pairs(values, 9))
   function handleCursorActivity(lineNumber) {
     if (state.suppressCursorSync || !state.currentResult) return;
     if (elements.resultContent.hidden) return;
+    // In step mode the player owns the current line; only mirror the cursor
+    // when the learner is looking at the full list.
+    if (traceStepsOf(state.currentResult).length && !state.traceShowAll) return;
     const card = elements.lineList.querySelector(`[data-line="${lineNumber}"]`);
     if (card) {
       activateLine(lineNumber, { scrollEditor: false, scrollCard: true });
@@ -588,11 +622,15 @@ print(find_pairs(values, 9))
 
   function clearResult() {
     state.currentResult = null;
+    clearTraceLine();
+    state.traceIndex = 0;
+    state.traceShowAll = false;
     if (state.activeLine !== null) {
       editor.removeLineClass(state.activeLine, "cm-selected-line");
       state.activeLine = null;
     }
     elements.lineList.replaceChildren();
+    elements.lineList.hidden = false;
     elements.resultBadges.replaceChildren();
     elements.resultBadges.hidden = true;
     elements.resultContent.hidden = true;
@@ -600,6 +638,15 @@ print(find_pairs(values, 9))
     elements.resultEmpty.hidden = false;
     elements.summaryText.textContent = "";
     elements.resultMeta.textContent = "";
+    elements.traceNotice.hidden = true;
+    elements.traceNotice.classList.remove("is-error");
+    elements.finalOutputCard.hidden = true;
+    elements.tracePlayer.hidden = true;
+    elements.traceShowAll.hidden = true;
+    elements.traceShowAll.setAttribute("aria-pressed", "false");
+    elements.traceShowAll.textContent = "Show all";
+    elements.memoryPanel.hidden = true;
+    elements.traceRuns.hidden = true;
   }
 
   function makeBadge(text, className, { dot = false, title = "" } = {}) {
@@ -647,8 +694,453 @@ print(find_pairs(values, 9))
     elements.resultBadges.hidden = false;
   }
 
+  function traceStepsOf(result) {
+    return result && Array.isArray(result.steps) ? result.steps : [];
+  }
+
+  function lineDataFor(result, lineNumber) {
+    if (!result || !Array.isArray(result.lines)) return null;
+    return result.lines.find((item) => Number(item.line) === Number(lineNumber)) || null;
+  }
+
+  function sourceLineFor(result, lineNumber) {
+    const source = String((result && result.code) || "").split(/\r\n|\r|\n/);
+    return source[lineNumber - 1] || "";
+  }
+
+  function formatChangedValues(step) {
+    if (!step) return "—";
+    const entries = Object.entries(step.variables || {});
+    if (!entries.length) return "—";
+    return entries
+      .map(([name, value]) => (value === null ? `${name} removed` : `${name} = ${value}`))
+      .join(", ");
+  }
+
+  function getRunRows(item, steps) {
+    if (!item || !Number.isFinite(Number(item.run_count)) || Number(item.run_count) <= 1) {
+      return null;
+    }
+    const runSteps = Array.isArray(item.runs) ? item.runs : [];
+    if (!runSteps.length) return null;
+    const stepByNumber = new Map(
+      steps.map((step) => [Number(step.step), step]),
+    );
+    const rows = runSteps.slice(0, 5).map((stepNumber, index) => {
+      const step = stepByNumber.get(Number(stepNumber)) || null;
+      return {
+        index: index + 1,
+        step: Number(stepNumber),
+        changed: formatChangedValues(step),
+      };
+    });
+    return {
+      rows,
+      total: Number(item.run_count),
+      remaining: Math.max(0, Number(item.run_count) - rows.length),
+    };
+  }
+
+  function createLineRuns(item, steps) {
+    const data = getRunRows(item, steps);
+    if (!data) return null;
+
+    const wrap = document.createElement("span");
+    wrap.className = "line-runs";
+    wrap.setAttribute("role", "table");
+    wrap.setAttribute("aria-label", `${data.total} runs of line ${item.line}`);
+
+    const head = document.createElement("span");
+    head.className = "line-run-row line-run-head";
+    head.setAttribute("role", "row");
+    for (const label of ["Run", "Step", "Changed values"]) {
+      const cell = document.createElement("span");
+      cell.className = "line-run-cell";
+      cell.setAttribute("role", "columnheader");
+      cell.textContent = label;
+      head.append(cell);
+    }
+    wrap.append(head);
+
+    for (const row of data.rows) {
+      const line = document.createElement("span");
+      line.className = "line-run-row";
+      line.setAttribute("role", "row");
+
+      const runCell = document.createElement("span");
+      runCell.className = "line-run-cell";
+      runCell.setAttribute("role", "cell");
+      runCell.textContent = `Run ${row.index}`;
+
+      const stepCell = document.createElement("span");
+      stepCell.className = "line-run-cell";
+      stepCell.setAttribute("role", "cell");
+      stepCell.textContent = `Step ${row.step}`;
+
+      const changedCell = document.createElement("span");
+      changedCell.className = "line-run-cell line-run-changed";
+      changedCell.setAttribute("role", "cell");
+      changedCell.textContent = row.changed;
+      changedCell.title = row.changed;
+
+      line.append(runCell, stepCell, changedCell);
+      wrap.append(line);
+    }
+
+    if (data.remaining > 0) {
+      const more = document.createElement("span");
+      more.className = "line-run-more";
+      more.setAttribute("role", "row");
+      const cell = document.createElement("span");
+      cell.setAttribute("role", "cell");
+      cell.textContent = `and ${formatCount(data.remaining)} more ${
+        data.remaining === 1 ? "run" : "runs"
+      }`;
+      more.append(cell);
+      wrap.append(more);
+    }
+
+    return wrap;
+  }
+
+  function makeValueChip(name, value, changed) {
+    const chip = document.createElement("span");
+    chip.className = `value-chip${changed ? " is-changed" : ""}`;
+
+    const nameElement = document.createElement("span");
+    nameElement.className = "value-name";
+    nameElement.textContent = name;
+
+    const equals = document.createElement("span");
+    equals.className = "value-eq";
+    equals.setAttribute("aria-hidden", "true");
+    equals.textContent = "=";
+
+    const valueElement = document.createElement("code");
+    valueElement.className = "value-text";
+    valueElement.textContent = String(value);
+
+    chip.append(nameElement, equals, valueElement);
+    return chip;
+  }
+
+  function makeRemovedChip(name) {
+    const chip = document.createElement("span");
+    chip.className = "value-chip is-removed";
+
+    const nameElement = document.createElement("span");
+    nameElement.className = "value-name";
+    nameElement.textContent = name;
+
+    const note = document.createElement("span");
+    note.className = "value-note";
+    note.textContent = "removed";
+
+    chip.append(nameElement, note);
+    return chip;
+  }
+
+  function buildMemory(steps, upto) {
+    const scopes = new Map();
+    for (let index = 0; index <= upto; index += 1) {
+      const step = steps[index];
+      if (!step) break;
+      const key = `${step.function}:${step.depth}`;
+      let scope = scopes.get(key);
+      if (!scope) {
+        scope = {
+          function: step.function,
+          depth: step.depth,
+          values: new Map(),
+          order: [],
+        };
+        scopes.set(key, scope);
+      }
+      for (const [name, value] of Object.entries(step.variables || {})) {
+        if (value === null) {
+          scope.values.delete(name);
+          continue;
+        }
+        if (!scope.values.has(name)) scope.order.push(name);
+        scope.values.set(name, value);
+      }
+      if (step.event === "return" && index !== upto) {
+        scopes.delete(key);
+      }
+    }
+    return Array.from(scopes.values()).filter((scope) => scope.values.size > 0);
+  }
+
+  function renderMemory(step, index) {
+    const steps = traceStepsOf(state.currentResult);
+    const scopes = buildMemory(steps, index);
+    const changed = new Set(Object.keys(step.variables || {}));
+    elements.memoryScopes.replaceChildren();
+
+    for (const scope of scopes) {
+      const wrap = document.createElement("div");
+      wrap.className = "memory-scope";
+
+      const name = document.createElement("span");
+      name.className = "memory-scope-name";
+      name.textContent = scope.function === "<module>" ? "module" : `${scope.function}()`;
+
+      const chips = document.createElement("div");
+      chips.className = "value-chips";
+      for (const key of scope.order) {
+        if (!scope.values.has(key)) continue;
+        chips.append(makeValueChip(key, scope.values.get(key), changed.has(key)));
+      }
+
+      wrap.append(name, chips);
+      elements.memoryScopes.append(wrap);
+    }
+
+    if (!elements.memoryScopes.childElementCount) {
+      const empty = document.createElement("p");
+      empty.className = "memory-empty";
+      empty.textContent = "No names have changed yet in this trace.";
+      elements.memoryScopes.append(empty);
+    }
+    elements.memoryPanel.hidden = false;
+  }
+
+  function renderStepValues(step) {
+    const entries = Object.entries(step.variables || {});
+    elements.traceValues.hidden = entries.length === 0;
+    elements.traceValueChips.replaceChildren();
+    for (const [name, value] of entries) {
+      elements.traceValueChips.append(
+        value === null ? makeRemovedChip(name) : makeValueChip(name, value, true),
+      );
+    }
+  }
+
+  function renderStepOutput(step) {
+    const output = String(step.stdout || "");
+    elements.traceOutputWrap.hidden = !output;
+    elements.traceOutput.textContent = output;
+  }
+
+  function stepFunctionLabel(step) {
+    const name = step.function || "<module>";
+    if (name === "<module>") {
+      return step.event === "return" ? "module finished" : "module level";
+    }
+    return step.event === "return"
+      ? `returning from ${name}()`
+      : `inside ${name}() · depth ${step.depth}`;
+  }
+
+  function clearTraceLine() {
+    if (state.traceLine !== null) {
+      editor.removeLineClass(state.traceLine, "cm-trace-line");
+      editor.removeLineClass(state.traceLine, "cm-trace-line-error");
+      state.traceLine = null;
+    }
+  }
+
+  function setTraceLine(lineNumber, failing) {
+    clearTraceLine();
+    if (!Number.isInteger(Number(lineNumber)) || Number(lineNumber) < 1) return;
+    editor.addLineClass(
+      Number(lineNumber),
+      failing ? "cm-trace-line-error" : "cm-trace-line",
+    );
+    state.traceLine = Number(lineNumber);
+    state.suppressCursorSync = true;
+    editor.scrollToLine(Number(lineNumber));
+    state.suppressCursorSync = false;
+  }
+
+  function setActiveCard(lineNumber) {
+    elements.lineList.querySelectorAll(".line-card").forEach((other) => {
+      const active = Number(other.dataset.line) === Number(lineNumber);
+      other.classList.toggle("is-active", active);
+      other.setAttribute("aria-pressed", String(active));
+    });
+  }
+
+  function showTraceNotice(title, text, isError) {
+    elements.traceNotice.hidden = false;
+    elements.traceNotice.classList.toggle("is-error", Boolean(isError));
+    elements.traceNoticeTitle.textContent = title;
+    elements.traceNoticeText.textContent = text;
+  }
+
+  function renderTraceStep(index) {
+    const result = state.currentResult;
+    if (!result) return;
+    const steps = traceStepsOf(result);
+    if (!steps.length) return;
+
+    const clamped = Math.max(0, Math.min(Math.trunc(index), steps.length - 1));
+    state.traceIndex = clamped;
+    const step = steps[clamped];
+    const item = lineDataFor(result, step.line);
+    const code = item ? item.code : sourceLineFor(result, step.line);
+
+    elements.tracePosition.textContent = `Step ${formatCount(clamped + 1)} of ${formatCount(
+      steps.length,
+    )} · line ${step.line}`;
+    elements.traceLineChip.textContent = String(step.line);
+    elements.traceCode.textContent = code || "(blank line)";
+    elements.traceFunction.textContent = stepFunctionLabel(step);
+    elements.traceExplanation.textContent = item
+      ? item.explanation
+      : "This line ran during the traced execution.";
+
+    const error = result.trace_error || null;
+    elements.traceErrorNote.hidden = !step.failing;
+    if (step.failing) {
+      elements.traceErrorNote.textContent = `${(error && error.type) || "Error"}: ${
+        (error && error.message) || "The program stopped on this line."
+      }`;
+    } else {
+      elements.traceErrorNote.textContent = "";
+    }
+
+    renderStepValues(step);
+    renderStepOutput(step);
+    renderMemory(step, clamped);
+
+    const runs = createLineRuns(item, steps);
+    elements.traceRuns.hidden = !runs;
+    elements.traceRunsBody.replaceChildren(runs || document.createTextNode(""));
+
+    elements.traceBack.disabled = clamped === 0;
+    elements.traceNext.disabled = clamped === steps.length - 1;
+
+    const percent = Math.round(((clamped + 1) / steps.length) * 100);
+    elements.traceProgress.setAttribute("aria-valuenow", String(percent));
+    elements.traceProgressBar.style.width = `${percent}%`;
+
+    setTraceLine(step.line, Boolean(step.failing));
+    setActiveCard(step.line);
+  }
+
+  function setShowAll(showAll, { announceChange = true } = {}) {
+    if (!state.currentResult || !traceStepsOf(state.currentResult).length) return;
+    state.traceShowAll = Boolean(showAll);
+    elements.tracePlayer.hidden = state.traceShowAll;
+    elements.lineList.hidden = !state.traceShowAll;
+    elements.traceShowAll.setAttribute("aria-pressed", String(state.traceShowAll));
+    elements.traceShowAll.textContent = state.traceShowAll ? "Step through" : "Show all";
+    if (!state.traceShowAll) {
+      renderTraceStep(state.traceIndex);
+    }
+    if (announceChange) {
+      announce(
+        state.traceShowAll
+          ? "Showing every explained line."
+          : "Step-by-step view.",
+      );
+    }
+  }
+
+  function goToStep(index) {
+    if (!state.currentResult || !traceStepsOf(state.currentResult).length) return;
+    if (state.traceShowAll) {
+      state.traceShowAll = false;
+      elements.tracePlayer.hidden = false;
+      elements.lineList.hidden = true;
+      elements.traceShowAll.setAttribute("aria-pressed", "false");
+      elements.traceShowAll.textContent = "Show all";
+    }
+    renderTraceStep(index);
+  }
+
+  function handleTraceKeydown(event) {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    if (!state.currentResult || elements.resultContent.hidden) return;
+    if (!traceStepsOf(state.currentResult).length) return;
+    if (document.querySelector("dialog[open]")) return;
+
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest("input, textarea, select, [contenteditable='true'], .CodeMirror")
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    goToStep(state.traceIndex + (event.key === "ArrowRight" ? 1 : -1));
+  }
+
+  function renderTracePanels(result) {
+    const steps = traceStepsOf(result);
+    const status = result.trace_status === "ok" ? "ok" : "unavailable";
+    const hasTrace = status === "ok" && steps.length > 0;
+
+    state.traceIndex = 0;
+    state.traceShowAll = false;
+    clearTraceLine();
+    elements.traceShowAll.hidden = !hasTrace;
+    elements.traceShowAll.setAttribute("aria-pressed", "false");
+    elements.traceShowAll.textContent = "Show all";
+    elements.tracePlayer.hidden = !hasTrace;
+    elements.lineList.hidden = hasTrace;
+    elements.traceNotice.hidden = true;
+    elements.traceNotice.classList.remove("is-error");
+    elements.finalOutputCard.hidden = status !== "ok";
+    elements.finalOutputText.classList.remove("is-empty");
+
+    if (status !== "ok") {
+      showTraceNotice(
+        "Structure-only explanation",
+        result.trace_note ||
+          "LineLens could not run this code, so this explanation comes from the syntax tree alone.",
+        false,
+      );
+    } else if (result.trace_error) {
+      const error = result.trace_error;
+      const line = Number(error.line);
+      const location = Number.isInteger(line) && line > 0 ? ` on line ${line}` : "";
+      showTraceNotice(
+        `Stopped with ${error.type || "an error"}`,
+        result.trace_note ||
+          `${error.type || "The program"}${location}: ${
+            error.message || "The program stopped."
+          }`,
+        true,
+      );
+    } else if (result.trace_note) {
+      showTraceNotice("Trace note", result.trace_note, false);
+    } else if (!hasTrace) {
+      showTraceNotice(
+        "Nothing executed",
+        "LineLens traced the program, but no executable lines ran.",
+        false,
+      );
+    }
+
+    if (status === "ok") {
+      const output = String(result.final_output || "");
+      elements.finalOutputText.textContent =
+        output ||
+        (result.trace_error
+          ? "(No output was printed before the error.)"
+          : "(The program finished without printing output.)");
+      elements.finalOutputText.classList.toggle("is-empty", !output);
+      elements.copyOutput.hidden = !output;
+    } else {
+      elements.finalOutputText.textContent = "";
+      elements.copyOutput.hidden = true;
+    }
+
+    if (hasTrace) {
+      renderTraceStep(0);
+    } else {
+      elements.memoryPanel.hidden = true;
+      elements.traceRuns.hidden = true;
+    }
+  }
+
   function renderResult(result) {
     state.currentResult = result;
+    clearTraceLine();
     if (state.activeLine !== null) {
       editor.removeLineClass(state.activeLine, "cm-selected-line");
       state.activeLine = null;
@@ -660,6 +1152,7 @@ print(find_pairs(values, 9))
     } explained`;
     renderBadges(result);
 
+    const steps = traceStepsOf(result);
     const fragment = document.createDocumentFragment();
     for (const item of result.lines) {
       const card = document.createElement("button");
@@ -684,6 +1177,8 @@ print(find_pairs(values, 9))
       explanation.textContent = item.explanation;
 
       body.append(code, explanation);
+      const runs = createLineRuns(item, steps);
+      if (runs) body.append(runs);
       card.append(chip, body);
       card.addEventListener("click", () => {
         activateLine(item.line, { scrollEditor: true, scrollCard: false });
@@ -702,7 +1197,12 @@ print(find_pairs(values, 9))
     elements.resultEmpty.hidden = true;
     elements.resultLoading.hidden = true;
     elements.resultContent.hidden = false;
-    announce(`Explanation ready. ${result.lines.length} lines explained.`);
+    renderTracePanels(result);
+    announce(
+      steps.length
+        ? `Explanation ready. ${result.lines.length} lines and ${steps.length} execution steps.`
+        : `Explanation ready. ${result.lines.length} lines explained.`,
+    );
   }
 
   function activateLine(lineNumber, { scrollEditor = false, scrollCard = true } = {}) {
@@ -896,15 +1396,18 @@ print(find_pairs(values, 9))
       return;
     }
 
+    const stdin = elements.stdinInput.value;
     clearTransientError();
     clearDiagnosis();
     setRunLoading(true);
     showConsole({ status: "Running", output: "Running your code..." });
 
     try {
+      const body = { code };
+      if (stdin) body.stdin = stdin;
       const data = await apiFetch("/api/run", {
         method: "POST",
-        body: { code },
+        body,
       });
       renderRunResult(data);
     } catch (error) {
@@ -990,9 +1493,11 @@ print(find_pairs(values, 9))
     setLoading(true);
     elements.resultEmpty.hidden = true;
     state.lastExplain = { code, at: Date.now() };
+    const stdin = elements.stdinInput.value;
 
     try {
       const body = { code };
+      if (stdin) body.stdin = stdin;
       if (state.lastRunError) {
         body.error_context = state.lastRunError;
       }
@@ -1144,6 +1649,7 @@ print(find_pairs(values, 9))
     try {
       const detail = await apiFetch(`/api/history/${id}`);
       editor.setValue(detail.code);
+      elements.stdinInput.value = "";
       clearTransientError();
       clearDiagnosis();
       clearConsole();
@@ -1235,6 +1741,22 @@ print(find_pairs(values, 9))
     }
   }
 
+  async function copyFinalOutput() {
+    const text = elements.finalOutputText.textContent || "";
+    if (!text || elements.finalOutputText.classList.contains("is-empty")) return;
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+      showToast("Copying is unavailable in this browser.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("Final output copied.");
+      announce("Final output copied.");
+    } catch (error) {
+      showToast("Could not copy the output.");
+    }
+  }
+
   function bindEvents() {
     elements.explainButton.addEventListener("click", () => void runExplain());
     elements.runButton.addEventListener("click", () => void runCode());
@@ -1248,8 +1770,14 @@ print(find_pairs(values, 9))
       elements.consoleExpand.setAttribute("aria-expanded", String(expanded));
       announce(expanded ? "Output expanded." : "Output collapsed.");
     });
+    elements.traceBack.addEventListener("click", () => goToStep(state.traceIndex - 1));
+    elements.traceNext.addEventListener("click", () => goToStep(state.traceIndex + 1));
+    elements.traceShowAll.addEventListener("click", () => setShowAll(!state.traceShowAll));
+    elements.copyOutput.addEventListener("click", () => void copyFinalOutput());
+    document.addEventListener("keydown", handleTraceKeydown);
     elements.loadSample.addEventListener("click", () => {
       editor.setValue(SAMPLE_CODE);
+      elements.stdinInput.value = "";
       clearResult();
       clearTransientError();
       clearDiagnosis();

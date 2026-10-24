@@ -204,6 +204,20 @@ def explain_code(
         code_hash = hash_code(f"{base_hash}\x00nonce\x00{uuid.uuid4().hex}")
 
     cached_explanation = get_cached_explanation(db, code_hash) if cacheable else None
+    if (
+        cached_explanation is not None
+        and cached_explanation.trace is None
+        and cached_explanation.trace_status == "unavailable"
+        and not cached_explanation.trace_note
+        and not cached_explanation.final_output
+    ):
+        # Rows written before execution tracing existed have no trace and no
+        # reason for its absence. Drop this one so the request rebuilds it with
+        # real values instead of showing a structure-only explanation forever.
+        db.delete(cached_explanation)
+        db.flush()
+        cached_explanation = None
+
     if cached_explanation is not None:
         submission = Submission(user_id=user.id, code=payload.code, code_hash=code_hash)
         db.add(submission)

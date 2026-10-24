@@ -80,6 +80,18 @@
           <textarea id="code-editor" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="Paste your Python code here..."></textarea>
         </div>
 
+        <details class="input-panel" id="input-panel">
+          <summary>
+            <span>Program input <span class="input-optional">(optional)</span></span>
+            <span class="input-toggle" aria-hidden="true"></span>
+          </summary>
+          <div class="input-body">
+            <label class="visually-hidden" for="stdin-input">Program input</label>
+            <textarea id="stdin-input" rows="3" maxlength="1000" spellcheck="false" placeholder="One line per input() call..."></textarea>
+            <p class="input-hint">Only used when your code calls <code>input()</code>. Up to 1,000 characters.</p>
+          </div>
+        </details>
+
         <div class="console" id="console" hidden aria-labelledby="console-title">
           <div class="console-head">
             <div class="console-heading">
@@ -129,7 +141,10 @@
             <h2 class="panel-title" id="result-heading">Explanation</h2>
             <p class="panel-subtitle">Plain English, one line at a time.</p>
           </div>
-          <div class="badges" id="result-badges" hidden></div>
+          <div class="result-head-actions">
+            <button class="text-button view-toggle" id="trace-show-all" type="button" aria-pressed="false" hidden>Show all</button>
+            <div class="badges" id="result-badges" hidden></div>
+          </div>
         </div>
 
         <div class="result-body" id="result-body">
@@ -179,6 +194,70 @@
               </div>
               <p class="summary-text" id="summary-text"></p>
             </article>
+
+            <div class="trace-notice" id="trace-notice" role="note" hidden>
+              <strong id="trace-notice-title"></strong>
+              <p id="trace-notice-text"></p>
+            </div>
+
+            <section class="final-output-card" id="final-output-card" hidden aria-labelledby="final-output-title">
+              <div class="final-output-head">
+                <span class="eyebrow" id="final-output-title">Final output</span>
+                <button class="text-button" id="copy-output" type="button">Copy</button>
+              </div>
+              <pre class="final-output-text" id="final-output-text" tabindex="0"></pre>
+            </section>
+
+            <section class="trace-player" id="trace-player" hidden aria-labelledby="trace-player-title">
+              <div class="trace-player-head">
+                <div class="trace-player-heading">
+                  <span class="eyebrow" id="trace-player-title">Step through</span>
+                  <p class="trace-position" id="trace-position"></p>
+                </div>
+                <div class="trace-controls">
+                  <button class="button button-outline trace-button" id="trace-back" type="button" aria-label="Previous execution step">Back</button>
+                  <button class="button button-primary trace-button" id="trace-next" type="button" aria-label="Next execution step">Next</button>
+                </div>
+              </div>
+
+              <div class="trace-step" id="trace-step" aria-live="polite">
+                <div class="trace-line-row">
+                  <span class="line-chip" id="trace-line-chip"></span>
+                  <code class="trace-code" id="trace-code"></code>
+                  <span class="trace-function" id="trace-function"></span>
+                </div>
+                <p class="trace-explanation" id="trace-explanation"></p>
+                <p class="trace-error-note" id="trace-error-note" hidden></p>
+
+                <div class="trace-values" id="trace-values" hidden>
+                  <span class="eyebrow">Changed on this line</span>
+                  <div class="value-chips" id="trace-value-chips"></div>
+                </div>
+
+                <div class="trace-output-wrap" id="trace-output-wrap" hidden>
+                  <span class="eyebrow">New output</span>
+                  <pre class="trace-output" id="trace-output" tabindex="0"></pre>
+                </div>
+
+                <div class="memory-panel" id="memory-panel" hidden>
+                  <div class="memory-head">
+                    <span class="eyebrow">Memory at this step</span>
+                    <span class="memory-hint">Names recorded when they change</span>
+                  </div>
+                  <div class="memory-scopes" id="memory-scopes"></div>
+                </div>
+
+                <div class="trace-runs" id="trace-runs" hidden>
+                  <span class="eyebrow">Runs of this line</span>
+                  <div id="trace-runs-body"></div>
+                </div>
+              </div>
+
+              <div class="trace-progress" id="trace-progress" role="progressbar" aria-label="Execution progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <span id="trace-progress-bar"></span>
+              </div>
+            </section>
+
             <div class="line-list" id="line-list"></div>
           </div>
         </div>

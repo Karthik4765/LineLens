@@ -1,5 +1,3 @@
-"""Deterministic provider used by tests and by local runs without API keys."""
-
 from __future__ import annotations
 
 import json
