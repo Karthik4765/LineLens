@@ -41,6 +41,7 @@ class GroqProvider(LLMProvider):
         code: str,
         analysis: dict[str, Any],
         error_context: dict[str, Any] | None = None,
+        trace: dict[str, Any] | None = None,
     ) -> str:
         try:
             response = self._client.chat.completions.create(

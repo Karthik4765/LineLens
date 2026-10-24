@@ -304,6 +304,7 @@ def _child_env() -> dict[str, str]:
 
 def run_code(
     code: str,
+    stdin: str = "",
     *,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
@@ -337,6 +338,7 @@ def run_code(
                 [sys.executable, "-I", "-B", "-X", "utf8", str(script)],
                 cwd=directory,
                 env=_child_env(),
+                input=stdin,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

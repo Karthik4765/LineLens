@@ -569,12 +569,32 @@ a {
   display: flex;
   flex: 0 1 auto;
   flex-direction: column;
-  max-height: 140px;
+  min-height: 112px;
+  max-height: min(30dvh, 240px);
   margin: 12px 22px 0;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface-2);
+}
+
+/* Expanded output keeps one predictable size and scrolls inside it. */
+.console.is-expanded {
+  flex: 0 0 auto;
+  height: clamp(190px, 38dvh, 320px);
+  min-height: 190px;
+  max-height: clamp(190px, 38dvh, 320px);
+}
+
+.console.is-expanded .console-output {
+  max-height: none;
+}
+
+.console-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
 }
 
 .console-head {
@@ -1593,7 +1613,14 @@ kbd {
 
   .console {
     margin: 10px 14px 0;
-    max-height: 170px;
+    max-height: 220px;
+  }
+
+  .console.is-expanded {
+    flex: 0 0 auto;
+    height: clamp(200px, 42vh, 420px);
+    min-height: 200px;
+    max-height: clamp(200px, 42vh, 420px);
   }
 
   .editor-panel.has-console .editor-shell,

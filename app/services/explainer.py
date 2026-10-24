@@ -49,13 +49,14 @@ class Explainer:
         code: str,
         analysis: dict[str, Any],
         error_context: dict[str, Any] | None = None,
+        trace: dict[str, Any] | None = None,
     ) -> ExplanationResult:
         """Return a validated explanation, falling back when appropriate."""
 
         last_error: ProviderError | None = None
         for index, provider in enumerate(self.providers):
             try:
-                explanation = provider.explain(code, analysis, error_context)
+                explanation = provider.explain(code, analysis, error_context, trace)
                 return ExplanationResult(
                     explanation=explanation,
                     provider=provider.name,

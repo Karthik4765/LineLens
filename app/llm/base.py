@@ -25,7 +25,19 @@ Rules:
 - Keep each explanation concrete, beginner-friendly, and focused on that line.
 - Mention important names, conditions, and effects, but do not invent behaviour.
 - The AST facts are supporting metadata, not a replacement for reading the code.
+- When an execution trace is supplied, use only its values and output. Never invent
+  a value that is not in the trace.
+- If a line did not run, say that it did not run during this execution instead of
+  guessing what it would do.
 - Never include raw code, HTML, or markdown in the explanation strings.
+
+Worked example:
+1  a, b = 1, 2
+2  c = a + b
+3  print(c)
+The trace shows a = 1 and b = 2 after line 1, c = 3 after line 2, and the output
+3 after line 3. Explain those exact values. Do not replace them with different
+numbers.
 """
 
 
@@ -96,6 +108,7 @@ def build_prompt(
     code: str,
     analysis: dict[str, Any],
     error_context: dict[str, Any] | None = None,
+    trace: dict[str, Any] | None = None,
 ) -> str:
     """Build the provider-independent prompt sent to an LLM."""
 
@@ -123,6 +136,18 @@ def build_prompt(
             "In the summary, name this mistake in plain English and say how to fix it. "
             "In the explanation for the failing line, point out what goes wrong there. "
             "Do not invent any other errors.\n\n"
+        )
+    if trace:
+        trace_json = json.dumps(trace, ensure_ascii=False, separators=(",", ":"))
+        prompt += (
+            "EXECUTION TRACE (JSON):\n"
+            f"<trace>{trace_json}</trace>\n"
+            "This trace was recorded by actually running the program. Each step is in\n"
+            "execution order. `changed` holds the variables whose values changed on the\n"
+            "line that just finished, and `out` is the new output printed at that step.\n"
+            "Use these concrete values in your explanations. Quote a value exactly as it\n"
+            "appears in the trace. Never invent a value that is not in the trace. If the\n"
+            "trace shows an error or empty output, describe that honestly.\n\n"
         )
     return prompt + "AST FACTS (JSON):\n" + f"<facts>{facts}</facts>\n"
 
@@ -168,13 +193,14 @@ class LLMProvider(ABC):
         code: str,
         analysis: dict[str, Any],
         error_context: dict[str, Any] | None = None,
+        trace: dict[str, Any] | None = None,
     ) -> LLMExplanation:
         """Ask the model for a structured explanation, retrying malformed JSON once."""
 
-        prompt = build_prompt(code, analysis, error_context)
+        prompt = build_prompt(code, analysis, error_context, trace)
         last_error: Exception | None = None
         for attempt in range(2):
-            raw = self._generate(prompt, code, analysis, error_context)
+            raw = self._generate(prompt, code, analysis, error_context, trace)
             try:
                 return parse_explanation(raw, code)
             except (json.JSONDecodeError, ValidationError, ValueError) as exc:
@@ -196,5 +222,6 @@ class LLMProvider(ABC):
         code: str,
         analysis: dict[str, Any],
         error_context: dict[str, Any] | None = None,
+        trace: dict[str, Any] | None = None,
     ) -> str:
         """Return raw model text for a prompt."""

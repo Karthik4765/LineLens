@@ -36,6 +36,7 @@ print(find_pairs(values, 9))
     consoleMeta: byId("console-meta"),
     consoleOutput: byId("console-output"),
     consoleClear: byId("console-clear"),
+    consoleExpand: byId("console-expand"),
     editorPanel: document.querySelector(".editor-panel"),
     resultPanel: byId("result-panel"),
     resultBody: byId("result-body"),
@@ -1240,6 +1241,12 @@ print(find_pairs(values, 9))
     elements.consoleClear.addEventListener("click", () => {
       clearConsole();
       announce("Output cleared.");
+    });
+    elements.consoleExpand.addEventListener("click", () => {
+      const expanded = elements.console.classList.toggle("is-expanded");
+      elements.consoleExpand.textContent = expanded ? "Collapse" : "Expand";
+      elements.consoleExpand.setAttribute("aria-expanded", String(expanded));
+      announce(expanded ? "Output expanded." : "Output collapsed.");
     });
     elements.loadSample.addEventListener("click", () => {
       editor.setValue(SAMPLE_CODE);

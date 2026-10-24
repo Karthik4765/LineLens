@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import uuid
+from dataclasses import asdict
 from datetime import datetime, time, timedelta, timezone
 from math import ceil
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
@@ -15,12 +18,25 @@ from app.deps import get_current_user
 from app.errors import APIError
 from app.llm.base import InvalidLLMResponse, LLMExplanation, ProviderUnavailableError
 from app.models import Explanation, Submission, UsageLog, User
-from app.schemas import ExplainRequest, ExplainResponse, LineExplanationOut
+from app.schemas import (
+    ExplainRequest,
+    ExplainResponse,
+    LineExplanationOut,
+    TraceErrorOut,
+    TraceStepOut,
+)
 from app.services.analyzer import analyze_code
-from app.services.cache import explanation_hash, get_cached_explanation, normalize_code
+from app.services.cache import (
+    explanation_hash,
+    get_cached_explanation,
+    hash_code,
+    normalize_code,
+    uses_nondeterministic_imports,
+)
 from app.services.explainer import Explainer, get_explainer
 from app.services.rate_limiter import SlidingWindowRateLimiter, get_rate_limiter
 from app.services.runner import check_syntax
+from app.services.tracer import TraceResult, trace_code
 
 router = APIRouter(prefix="/api", tags=["explain"])
 settings = get_settings()
@@ -81,6 +97,33 @@ def _validate_code(code: str) -> None:
         )
 
 
+def _trace_fields_from_result(trace: TraceResult) -> dict[str, Any]:
+    """Turn a fresh trace into response fields."""
+
+    return {
+        "trace_status": trace.status,
+        "trace_note": trace.note,
+        "final_output": trace.final_output,
+        "steps": [asdict(step) for step in trace.steps] if trace.available else [],
+        "trace_error": asdict(trace.error) if trace.error is not None else None,
+    }
+
+
+def _trace_fields_from_explanation(explanation: Explanation) -> dict[str, Any]:
+    """Read trace fields from a stored explanation, tolerating old rows."""
+
+    stored = explanation.trace or {}
+    steps = stored.get("steps") if isinstance(stored, dict) else None
+    error = stored.get("error") if isinstance(stored, dict) else None
+    return {
+        "trace_status": explanation.trace_status or "unavailable",
+        "trace_note": explanation.trace_note,
+        "final_output": explanation.final_output or "",
+        "steps": steps if isinstance(steps, list) else [],
+        "trace_error": error if isinstance(error, dict) else None,
+    }
+
+
 def _response(
     submission: Submission,
     code: str,
@@ -89,6 +132,12 @@ def _response(
     analysis: dict[str, object],
     provider: str,
     cached: bool,
+    *,
+    trace_status: str = "unavailable",
+    trace_note: str | None = None,
+    final_output: str = "",
+    steps: list[dict[str, Any]] | None = None,
+    trace_error: dict[str, Any] | None = None,
 ) -> ExplainResponse:
     source_lines = code.splitlines()
     output_lines = [
@@ -96,6 +145,8 @@ def _response(
             line=int(item["line"]),
             code=source_lines[int(item["line"]) - 1],
             explanation=str(item["explanation"]),
+            run_count=int(item.get("run_count", 0) or 0),
+            runs=[int(value) for value in (item.get("runs") or [])][:5],
         )
         for item in lines
     ]
@@ -108,6 +159,11 @@ def _response(
         provider=provider,
         cached=cached,
         created_at=submission.created_at,
+        trace_status="ok" if trace_status == "ok" else "unavailable",
+        trace_note=trace_note,
+        final_output=final_output,
+        steps=[TraceStepOut.model_validate(step) for step in (steps or [])],
+        trace_error=TraceErrorOut.model_validate(trace_error) if trace_error else None,
     )
 
 
@@ -133,18 +189,22 @@ def explain_code(
 
     _validate_code(payload.code)
     normalized = normalize_code(payload.code)
+    stdin = payload.stdin or ""
     error_context = (
         payload.error_context.model_dump(exclude_none=True)
         if payload.error_context is not None
         else None
     )
-    code_hash = explanation_hash(normalized, error_context)
+    base_hash = explanation_hash(normalized, error_context, stdin)
+    cacheable = not uses_nondeterministic_imports(normalized)
+    code_hash = base_hash
+    if not cacheable:
+        # Random/time-based programs get a fresh storage key. History stays
+        # accurate, and a later request can never reuse an old trace.
+        code_hash = hash_code(f"{base_hash}\x00nonce\x00{uuid.uuid4().hex}")
 
-    cached_explanation = get_cached_explanation(db, code_hash)
+    cached_explanation = get_cached_explanation(db, code_hash) if cacheable else None
     if cached_explanation is not None:
-        explanation = LLMExplanation.model_validate(
-            {"summary": cached_explanation.summary, "lines": cached_explanation.lines}
-        )
         submission = Submission(user_id=user.id, code=payload.code, code_hash=code_hash)
         db.add(submission)
         db.add(
@@ -160,11 +220,12 @@ def explain_code(
         return _response(
             submission,
             payload.code,
-            explanation.summary,
-            [line.model_dump() for line in explanation.lines],
+            cached_explanation.summary,
+            cached_explanation.lines,
             cached_explanation.analysis,
             cached_explanation.provider,
             cached=True,
+            **_trace_fields_from_explanation(cached_explanation),
         )
 
     if _real_ai_calls_today(db, user.id) >= settings.daily_ai_limit:
@@ -181,8 +242,17 @@ def explain_code(
         )
 
     analysis = analyze_code(normalized)
+    trace = trace_code(
+        normalized,
+        stdin=stdin,
+        timeout_seconds=settings.trace_timeout_seconds,
+        max_events=settings.trace_max_events,
+        max_output_chars=settings.trace_max_output_chars,
+        memory_limit_mb=settings.trace_memory_limit_mb,
+    )
+    trace_prompt = trace.to_prompt() if trace.available else None
     try:
-        result = explainer.explain(normalized, analysis, error_context)
+        result = explainer.explain(normalized, analysis, error_context, trace_prompt)
     except InvalidLLMResponse as exc:
         raise APIError(
             502,
@@ -197,6 +267,11 @@ def explain_code(
         ) from exc
 
     lines = [line.model_dump() for line in result.explanation.lines]
+    for item in lines:
+        line_number = int(item["line"])
+        item["run_count"] = trace.run_counts.get(line_number, 0)
+        item["runs"] = trace.run_steps.get(line_number, [])[:5]
+
     db.add(
         Explanation(
             code_hash=code_hash,
@@ -204,6 +279,10 @@ def explain_code(
             lines=lines,
             analysis=analysis,
             provider=result.provider,
+            trace_status=trace.status,
+            trace_note=trace.note,
+            final_output=trace.final_output,
+            trace=trace.to_storage(),
         )
     )
     submission = Submission(user_id=user.id, code=payload.code, code_hash=code_hash)
@@ -227,4 +306,5 @@ def explain_code(
         analysis,
         result.provider,
         cached=False,
+        **_trace_fields_from_result(trace),
     )

@@ -15,6 +15,8 @@ from app.schemas import (
     HistoryItem,
     HistoryList,
     LineExplanationOut,
+    TraceErrorOut,
+    TraceStepOut,
 )
 
 router = APIRouter(prefix="/api/history", tags=["history"])
@@ -86,9 +88,14 @@ def get_history_item(
             line=item["line"],
             code=source_lines[item["line"] - 1],
             explanation=item["explanation"],
+            run_count=int(item.get("run_count", 0) or 0),
+            runs=[int(value) for value in (item.get("runs") or [])][:5],
         )
         for item in explanation.lines
     ]
+    stored = explanation.trace or {}
+    steps = stored.get("steps") if isinstance(stored, dict) else None
+    error = stored.get("error") if isinstance(stored, dict) else None
     return ExplainResponse(
         id=submission.id,
         code=submission.code,
@@ -98,4 +105,14 @@ def get_history_item(
         provider=explanation.provider,
         cached=False,
         created_at=submission.created_at,
+        trace_status="ok" if explanation.trace_status == "ok" else "unavailable",
+        trace_note=explanation.trace_note,
+        final_output=explanation.final_output or "",
+        steps=[
+            TraceStepOut.model_validate(step)
+            for step in (steps if isinstance(steps, list) else [])
+        ],
+        trace_error=(
+            TraceErrorOut.model_validate(error) if isinstance(error, dict) else None
+        ),
     )

@@ -61,6 +61,14 @@ class Explanation(Base):
     lines: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
     analysis: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    trace_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unavailable", server_default="unavailable"
+    )
+    trace_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_output: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    trace: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

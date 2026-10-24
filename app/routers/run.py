@@ -63,7 +63,11 @@ def run_snippet(
         )
 
     _validate_run_input(payload.code)
-    result = run_code(payload.code, timeout_seconds=settings.run_timeout_seconds)
+    result = run_code(
+        payload.code,
+        stdin=payload.stdin,
+        timeout_seconds=settings.run_timeout_seconds,
+    )
     error = (
         RunErrorOut(
             type=result.error.type,

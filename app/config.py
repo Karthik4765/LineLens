@@ -29,6 +29,16 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from exc
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = _env(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+
+
 class Settings(BaseModel):
     """Validated runtime settings.
 
@@ -79,6 +89,18 @@ class Settings(BaseModel):
     )
     run_timeout_seconds: int = Field(
         default_factory=lambda: _env_int("RUN_TIMEOUT_SECONDS", 5), gt=0
+    )
+    trace_timeout_seconds: float = Field(
+        default_factory=lambda: _env_float("TRACE_TIMEOUT_SECONDS", 3.0), gt=0
+    )
+    trace_max_events: int = Field(
+        default_factory=lambda: _env_int("TRACE_MAX_EVENTS", 500), gt=0
+    )
+    trace_max_output_chars: int = Field(
+        default_factory=lambda: _env_int("TRACE_MAX_OUTPUT_CHARS", 10_000), gt=0
+    )
+    trace_memory_limit_mb: int = Field(
+        default_factory=lambda: _env_int("TRACE_MEMORY_LIMIT_MB", 256), gt=0
     )
 
     @property

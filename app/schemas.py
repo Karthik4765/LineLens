@@ -64,10 +64,12 @@ class ErrorContext(BaseModel):
 class ExplainRequest(BaseModel):
     code: str
     error_context: ErrorContext | None = None
+    stdin: str = Field(default="", max_length=1000)
 
 
 class RunRequest(BaseModel):
     code: str
+    stdin: str = Field(default="", max_length=1000)
 
 
 class RunErrorOut(BaseModel):
@@ -89,10 +91,29 @@ class RunResponse(BaseModel):
     error: RunErrorOut | None = None
 
 
+class TraceStepOut(BaseModel):
+    step: int
+    line: int
+    function: str
+    depth: int
+    event: Literal["line", "return"]
+    variables: dict[str, str | None] = Field(default_factory=dict)
+    stdout: str = ""
+    failing: bool = False
+
+
+class TraceErrorOut(BaseModel):
+    type: str
+    message: str
+    line: int | None = None
+
+
 class LineExplanationOut(BaseModel):
     line: int
     code: str
     explanation: str
+    run_count: int = 0
+    runs: list[int] = Field(default_factory=list)
 
 
 class ExplainResponse(BaseModel):
@@ -104,6 +125,11 @@ class ExplainResponse(BaseModel):
     provider: str
     cached: bool
     created_at: datetime
+    trace_status: Literal["ok", "unavailable"] = "unavailable"
+    trace_note: str | None = None
+    final_output: str = ""
+    steps: list[TraceStepOut] = Field(default_factory=list)
+    trace_error: TraceErrorOut | None = None
 
     @field_validator("created_at")
     @classmethod
