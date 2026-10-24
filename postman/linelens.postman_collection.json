@@ -1,0 +1,343 @@
+{
+  "info": {
+    "_postman_id": "c2f4a1d8-6f1e-4a7b-9d2c-3e8b5a0f7c11",
+    "name": "LineLens",
+    "description": "LineLens API: auth, explain with execution tracing, run, and history. Register or log in first; the token is stored in the collection variable `token`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "submissionId",
+      "value": ""
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('token', body.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"ada@example.com\",\n  \"password\": \"correct-horse-battery\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "register"]
+            },
+            "description": "Create an account and store the returned token."
+          },
+          "auth": {
+            "type": "noauth"
+          }
+        },
+        {
+          "name": "Log in",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ok', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('token', body.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"ada@example.com\",\n  \"password\": \"correct-horse-battery\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login"]
+            },
+            "description": "Log in and store the returned token."
+          },
+          "auth": {
+            "type": "noauth"
+          }
+        },
+        {
+          "name": "Me",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "me"]
+            },
+            "description": "Return the account behind the current token."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Explain",
+      "item": [
+        {
+          "name": "Explain with trace",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ok', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('trace ran', () => pm.expect(body.trace_status).to.eql('ok'));",
+                  "pm.test('final output', () => pm.expect(body.final_output).to.eql('3\\n'));",
+                  "pm.collectionVariables.set('submissionId', String(body.id));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"a, b = 1, 2\\nc = a + b\\nprint(c)\\n\",\n  \"stdin\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/explain",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "explain"]
+            },
+            "description": "Explain a three-line program. The response includes steps, changed values, final_output, and per-line run counts."
+          }
+        },
+        {
+          "name": "Explain with program input",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"name = input()\\nprint(f\\\"Hi {name}\\\")\\n\",\n  \"stdin\": \"Ada\\n\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/explain",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "explain"]
+            },
+            "description": "Supply stdin for input(). At most 1,000 characters."
+          }
+        },
+        {
+          "name": "Explain with error context",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"print(1 / 0)\\n\",\n  \"error_context\": {\n    \"type\": \"ZeroDivisionError\",\n    \"message\": \"division by zero\",\n    \"line\": 1,\n    \"hint\": \"Something is being divided by zero. Guard the denominator before dividing.\",\n    \"phase\": \"runtime\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/explain",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "explain"]
+            },
+            "description": "Pass the last run's diagnosis so the summary mentions the mistake."
+          }
+        },
+        {
+          "name": "Explain a blocked import",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"import os\\nprint(os.getcwd())\\n\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/explain",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "explain"]
+            },
+            "description": "Tracing is unavailable for this module, so the response falls back to AST-only explanations with trace_status=unavailable."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Run",
+      "item": [
+        {
+          "name": "Run code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"print(sum([1, 2, 3]))\\n\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/run",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "run"]
+            },
+            "description": "Execute code with a 5-second timeout. A failing program still returns 200 with ok=false and a diagnosis."
+          }
+        },
+        {
+          "name": "Run with program input",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"name = input()\\nprint(f\\\"Hi {name}\\\")\\n\",\n  \"stdin\": \"Ada\\n\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/run",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "run"]
+            },
+            "description": "Supply stdin for input()."
+          }
+        }
+      ]
+    },
+    {
+      "name": "History",
+      "item": [
+        {
+          "name": "List history",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/history?limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "history"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "List the current user's explanations, newest first."
+          }
+        },
+        {
+          "name": "History detail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/history/{{submissionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "history", "{{submissionId}}"]
+            },
+            "description": "Return one stored explanation with its trace. Run Explain with trace first to fill submissionId."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Return { \"status\": \"ok\" }."
+          },
+          "auth": {
+            "type": "noauth"
+          }
+        }
+      ]
+    }
+  ]
+}
