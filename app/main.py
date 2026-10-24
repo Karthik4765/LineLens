@@ -13,8 +13,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import get_settings
 from app.database import init_db
 from app.errors import APIError
-from app.routers import auth, explain
+from app.routers import auth, explain, history
 from app.schemas import HealthResponse
+from app.services.rate_limiter import SlidingWindowRateLimiter
 
 logger = logging.getLogger("linelens")
 settings = get_settings()
@@ -27,6 +28,10 @@ async def lifespan(_: FastAPI):
     init_db()
     if settings.uses_default_jwt_secret:
         logger.warning("JWT_SECRET is using the development default; set it in .env.")
+    app.state.rate_limiter = SlidingWindowRateLimiter(
+        limit=settings.rate_limit_requests,
+        window_seconds=settings.rate_limit_window_seconds,
+    )
     yield
 
 
@@ -107,6 +112,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(explain.router)
+    app.include_router(history.router)
     return app
 
 

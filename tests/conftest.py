@@ -23,6 +23,7 @@ from app.database import Base, SessionLocal, engine
 from app.llm.fake import FakeProvider
 from app.main import app
 from app.services.explainer import Explainer, get_explainer
+from app.services.rate_limiter import SlidingWindowRateLimiter, get_rate_limiter
 
 if TEST_DB_PATH.exists():
     TEST_DB_PATH.unlink()
@@ -58,6 +59,16 @@ def user_token(client: TestClient) -> str:
 @pytest.fixture
 def auth_headers(user_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {user_token}"}
+
+
+@pytest.fixture(autouse=True)
+def rate_limiter():
+    """Give each test an isolated limiter with the production-sized defaults."""
+
+    limiter = SlidingWindowRateLimiter(limit=10, window_seconds=60)
+    app.dependency_overrides[get_rate_limiter] = lambda: limiter
+    yield limiter
+    app.dependency_overrides.pop(get_rate_limiter, None)
 
 
 @pytest.fixture

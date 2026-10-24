@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import ast
+from datetime import datetime, time, timedelta, timezone
+from math import ceil
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -17,9 +20,31 @@ from app.schemas import ExplainRequest, ExplainResponse, LineExplanationOut
 from app.services.analyzer import analyze_code
 from app.services.cache import get_cached_explanation, hash_code, normalize_code
 from app.services.explainer import Explainer, get_explainer
+from app.services.rate_limiter import SlidingWindowRateLimiter, get_rate_limiter
 
 router = APIRouter(prefix="/api", tags=["explain"])
 settings = get_settings()
+
+
+def _real_ai_calls_today(db: Session, user_id: int) -> int:
+    """Count non-cached explanation calls since midnight UTC."""
+
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    count = db.scalar(
+        select(func.count(UsageLog.id)).where(
+            UsageLog.user_id == user_id,
+            UsageLog.cached.is_(False),
+            UsageLog.created_at >= start,
+        )
+    )
+    return int(count or 0)
+
+
+def _seconds_until_utc_midnight() -> int:
+    now = datetime.now(timezone.utc)
+    tomorrow = (now + timedelta(days=1)).date()
+    midnight = datetime.combine(tomorrow, time.min, tzinfo=timezone.utc)
+    return max(1, ceil((midnight - now).total_seconds()))
 
 
 def _validate_code(code: str) -> None:
@@ -98,8 +123,19 @@ def explain_code(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     explainer: Explainer = Depends(get_explainer),
+    limiter: SlidingWindowRateLimiter = Depends(get_rate_limiter),
 ) -> ExplainResponse:
     """Validate, cache-check, analyze, explain, persist, and return one submission."""
+
+    rate = limiter.check(user.id)
+    if not rate.allowed:
+        raise APIError(
+            429,
+            "rate_limited",
+            f"Too many requests. Try again in {rate.retry_after} seconds.",
+            headers={"Retry-After": str(rate.retry_after)},
+            retry_after=rate.retry_after,
+        )
 
     _validate_code(payload.code)
     normalized = normalize_code(payload.code)
@@ -130,6 +166,19 @@ def explain_code(
             cached_explanation.analysis,
             cached_explanation.provider,
             cached=True,
+        )
+
+    if _real_ai_calls_today(db, user.id) >= settings.daily_ai_limit:
+        retry_after = _seconds_until_utc_midnight()
+        raise APIError(
+            429,
+            "daily_limit_reached",
+            (
+                f"You have used today's {settings.daily_ai_limit} AI explanations. "
+                "Cached explanations still work; try again tomorrow."
+            ),
+            headers={"Retry-After": str(retry_after)},
+            retry_after=retry_after,
         )
 
     analysis = analyze_code(normalized)
