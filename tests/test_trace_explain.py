@@ -168,3 +168,33 @@ def test_history_detail_returns_the_stored_trace(
     assert [step["line"] for step in body["steps"]] == [1, 2, 3]
     assert body["lines"][1]["run_count"] == 1
     assert body["lines"][1]["runs"] == [2]
+
+
+def test_cache_rows_from_before_tracing_are_rebuilt(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    fake_provider: FakeProvider,
+    db_session: Session,
+):
+    from app.services.cache import explanation_hash, normalize_code
+
+    old_hash = explanation_hash(normalize_code(THREE_LINES))
+    db_session.add(
+        Explanation(
+            code_hash=old_hash,
+            summary="An old explanation without a trace.",
+            lines=[{"line": 1, "code": "a, b = 1, 2", "explanation": "Old."}],
+            analysis={},
+            provider="fake",
+        )
+    )
+    db_session.commit()
+
+    response = explain(client, auth_headers, THREE_LINES)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cached"] is False
+    assert body["trace_status"] == "ok"
+    assert body["final_output"] == "3\n"
+    assert db_session.scalar(select(func.count()).select_from(Explanation)) == 1

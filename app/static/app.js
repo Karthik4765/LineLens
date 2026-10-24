@@ -1040,7 +1040,8 @@ print(find_pairs(values, 9))
 
   function goToStep(index) {
     if (!state.currentResult || !traceStepsOf(state.currentResult).length) return;
-    if (state.traceShowAll) {
+    const wasShowingAll = state.traceShowAll;
+    if (wasShowingAll) {
       state.traceShowAll = false;
       elements.tracePlayer.hidden = false;
       elements.lineList.hidden = true;
@@ -1048,6 +1049,11 @@ print(find_pairs(values, 9))
       elements.traceShowAll.textContent = "Show all";
     }
     renderTraceStep(index);
+    if (wasShowingAll) {
+      // The line card that had focus is now hidden, so move focus somewhere
+      // useful without yanking the page back to the top.
+      elements.traceNext.focus({ preventScroll: true });
+    }
   }
 
   function handleTraceKeydown(event) {
