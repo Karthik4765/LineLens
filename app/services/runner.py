@@ -10,7 +10,6 @@ service with CPU, memory, filesystem, and network limits.
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import sys
@@ -18,6 +17,8 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from app.services.child_env import minimal_child_env
 
 DEFAULT_TIMEOUT_SECONDS = 5.0
 DEFAULT_MAX_OUTPUT_CHARS = 16_000
@@ -292,16 +293,6 @@ def _as_text(value: str | bytes | None) -> str:
     return value
 
 
-def _child_env() -> dict[str, str]:
-    """Keep the child environment small, but leave PATH and platform basics intact."""
-
-    return {
-        key: value
-        for key, value in os.environ.items()
-        if not key.upper().startswith("PYTHON")
-    }
-
-
 def run_code(
     code: str,
     stdin: str = "",
@@ -337,7 +328,7 @@ def run_code(
             completed = subprocess.run(
                 [sys.executable, "-I", "-B", "-X", "utf8", str(script)],
                 cwd=directory,
-                env=_child_env(),
+                env=minimal_child_env(),
                 input=stdin,
                 capture_output=True,
                 text=True,

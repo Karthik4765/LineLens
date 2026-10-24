@@ -24,6 +24,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.services.child_env import minimal_child_env
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 3.0
@@ -251,8 +253,8 @@ def trace_code(
         ]
         run_options: dict[str, Any] = {
             "cwd": directory,
-            # A fresh child with no inherited environment variables.
-            "env": {},
+            # A fresh child with no inherited application secrets.
+            "env": minimal_child_env(),
             "input": stdin,
             "capture_output": True,
             "text": True,

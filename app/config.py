@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
@@ -49,6 +49,7 @@ class Settings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     app_name: str = "LineLens"
+    environment: str = Field(default_factory=lambda: _env("ENV", "development").lower())
     database_url: str = Field(
         default_factory=lambda: _env("DATABASE_URL") or "sqlite:///./linelens.db"
     )
@@ -106,6 +107,14 @@ class Settings(BaseModel):
     @property
     def uses_default_jwt_secret(self) -> bool:
         return self.jwt_secret == DEFAULT_JWT_SECRET
+
+    @model_validator(mode="after")
+    def _require_secret_in_production(self) -> "Settings":
+        if self.environment == "production" and self.uses_default_jwt_secret:
+            raise ValueError(
+                "JWT_SECRET must be changed from the development default when ENV=production."
+            )
+        return self
 
 
 @lru_cache
