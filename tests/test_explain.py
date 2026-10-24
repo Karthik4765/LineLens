@@ -69,6 +69,9 @@ def test_syntax_error_returns_422_and_never_calls_provider(
     assert error["line"] == 1
     assert "Line 1" in error["message"]
     assert error["syntax_message"]
+    assert error["error_type"] == "SyntaxError"
+    assert error["hint"]
+    assert error["phase"] == "syntax"
     assert fake_provider.calls == []
 
 
@@ -197,3 +200,42 @@ def test_explain_requires_authentication(client: TestClient):
     response = client.post("/api/explain", json={"code": "print('hi')\n"})
 
     assert response.status_code == 401
+
+
+def test_error_context_is_forwarded_and_cached_separately(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    fake_provider: FakeProvider,
+):
+    code = "print(1 / 0)\n"
+    error_context = {
+        "type": "ZeroDivisionError",
+        "message": "division by zero",
+        "line": 1,
+        "hint": "Guard the denominator before dividing.",
+        "phase": "runtime",
+    }
+
+    plain = explain(client, auth_headers, code)
+    with_error = client.post(
+        "/api/explain",
+        json={"code": code, "error_context": error_context},
+        headers=auth_headers,
+    )
+    repeated = client.post(
+        "/api/explain",
+        json={"code": code, "error_context": error_context},
+        headers=auth_headers,
+    )
+
+    assert plain.status_code == 200
+    assert with_error.status_code == 200
+    assert repeated.status_code == 200
+    assert plain.json()["cached"] is False
+    assert with_error.json()["cached"] is False
+    assert repeated.json()["cached"] is True
+    assert "ZeroDivisionError" in with_error.json()["summary"]
+    assert "ZeroDivisionError" not in plain.json()["summary"]
+    assert len(fake_provider.calls) == 2
+    assert "THE PROGRAM FAILED WHEN RUN" in fake_provider.calls[1]
+

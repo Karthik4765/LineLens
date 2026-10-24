@@ -92,17 +92,39 @@ class LLMExplanation(BaseModel):
         return self
 
 
-def build_prompt(code: str, analysis: dict[str, Any]) -> str:
+def build_prompt(
+    code: str,
+    analysis: dict[str, Any],
+    error_context: dict[str, Any] | None = None,
+) -> str:
     """Build the provider-independent prompt sent to an LLM."""
 
     facts = json.dumps(analysis, ensure_ascii=False, separators=(",", ":"))
-    return (
+    prompt = (
         f"{JSON_INSTRUCTIONS}\n"
         "SOURCE CODE:\n"
         f"<python>\n{code}\n</python>\n\n"
-        "AST FACTS (JSON):\n"
-        f"<facts>{facts}</facts>\n"
     )
+    if error_context:
+        error_lines = [
+            f"Type: {error_context.get('type', 'Error')}",
+            f"Phase: {error_context.get('phase', 'runtime')}",
+        ]
+        if error_context.get("line") is not None:
+            error_lines.append(f"Line: {error_context['line']}")
+        error_lines.append(f"Message: {error_context.get('message', '')}")
+        if error_context.get("hint"):
+            error_lines.append(f"Hint: {error_context['hint']}")
+        prompt += (
+            "THE PROGRAM FAILED WHEN RUN:\n"
+            "<error>\n"
+            + "\n".join(error_lines)
+            + "\n</error>\n"
+            "In the summary, name this mistake in plain English and say how to fix it. "
+            "In the explanation for the failing line, point out what goes wrong there. "
+            "Do not invent any other errors.\n\n"
+        )
+    return prompt + "AST FACTS (JSON):\n" + f"<facts>{facts}</facts>\n"
 
 
 def _strip_fences(text: str) -> str:
@@ -141,13 +163,18 @@ class LLMProvider(ABC):
 
     name = "provider"
 
-    def explain(self, code: str, analysis: dict[str, Any]) -> LLMExplanation:
+    def explain(
+        self,
+        code: str,
+        analysis: dict[str, Any],
+        error_context: dict[str, Any] | None = None,
+    ) -> LLMExplanation:
         """Ask the model for a structured explanation, retrying malformed JSON once."""
 
-        prompt = build_prompt(code, analysis)
+        prompt = build_prompt(code, analysis, error_context)
         last_error: Exception | None = None
         for attempt in range(2):
-            raw = self._generate(prompt, code, analysis)
+            raw = self._generate(prompt, code, analysis, error_context)
             try:
                 return parse_explanation(raw, code)
             except (json.JSONDecodeError, ValidationError, ValueError) as exc:
@@ -163,5 +190,11 @@ class LLMProvider(ABC):
         ) from last_error
 
     @abstractmethod
-    def _generate(self, prompt: str, code: str, analysis: dict[str, Any]) -> str:
+    def _generate(
+        self,
+        prompt: str,
+        code: str,
+        analysis: dict[str, Any],
+        error_context: dict[str, Any] | None = None,
+    ) -> str:
         """Return raw model text for a prompt."""

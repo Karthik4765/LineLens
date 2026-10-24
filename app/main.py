@@ -4,21 +4,24 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import get_settings
 from app.database import init_db
 from app.errors import APIError
-from app.routers import auth, explain, history
+from app.routers import auth, explain, history, run
 from app.schemas import HealthResponse
 from app.services.rate_limiter import SlidingWindowRateLimiter
 
 logger = logging.getLogger("linelens")
 settings = get_settings()
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 @asynccontextmanager
@@ -31,6 +34,10 @@ async def lifespan(_: FastAPI):
     app.state.rate_limiter = SlidingWindowRateLimiter(
         limit=settings.rate_limit_requests,
         window_seconds=settings.rate_limit_window_seconds,
+    )
+    app.state.run_rate_limiter = SlidingWindowRateLimiter(
+        limit=settings.run_rate_limit_requests,
+        window_seconds=settings.run_rate_limit_window_seconds,
     )
     yield
 
@@ -113,6 +120,13 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(explain.router)
     app.include_router(history.router)
+    app.include_router(run.router)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def index() -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
+
     return app
 
 

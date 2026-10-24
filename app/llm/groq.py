@@ -35,7 +35,13 @@ class GroqProvider(LLMProvider):
         self.model = model
         self._client = Groq(api_key=api_key)
 
-    def _generate(self, prompt: str, code: str, analysis: dict[str, Any]) -> str:
+    def _generate(
+        self,
+        prompt: str,
+        code: str,
+        analysis: dict[str, Any],
+        error_context: dict[str, Any] | None = None,
+    ) -> str:
         try:
             response = self._client.chat.completions.create(
                 model=self.model,

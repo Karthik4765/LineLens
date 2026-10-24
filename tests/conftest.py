@@ -24,6 +24,7 @@ from app.llm.fake import FakeProvider
 from app.main import app
 from app.services.explainer import Explainer, get_explainer
 from app.services.rate_limiter import SlidingWindowRateLimiter, get_rate_limiter
+from app.routers.run import get_run_rate_limiter
 
 if TEST_DB_PATH.exists():
     TEST_DB_PATH.unlink()
@@ -69,6 +70,16 @@ def rate_limiter():
     app.dependency_overrides[get_rate_limiter] = lambda: limiter
     yield limiter
     app.dependency_overrides.pop(get_rate_limiter, None)
+
+
+@pytest.fixture(autouse=True)
+def run_rate_limiter():
+    """Keep code-execution limits separate from AI-explanation limits."""
+
+    limiter = SlidingWindowRateLimiter(limit=100, window_seconds=60)
+    app.dependency_overrides[get_run_rate_limiter] = lambda: limiter
+    yield limiter
+    app.dependency_overrides.pop(get_run_rate_limiter, None)
 
 
 @pytest.fixture

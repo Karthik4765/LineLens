@@ -71,6 +71,15 @@ class Settings(BaseModel):
     max_code_lines: int = Field(
         default_factory=lambda: _env_int("MAX_CODE_LINES", 300), gt=0
     )
+    run_rate_limit_requests: int = Field(
+        default_factory=lambda: _env_int("RUN_RATE_LIMIT_REQUESTS", 20), gt=0
+    )
+    run_rate_limit_window_seconds: int = Field(
+        default_factory=lambda: _env_int("RUN_RATE_LIMIT_WINDOW_SECONDS", 60), gt=0
+    )
+    run_timeout_seconds: int = Field(
+        default_factory=lambda: _env_int("RUN_TIMEOUT_SECONDS", 5), gt=0
+    )
 
     @property
     def uses_default_jwt_secret(self) -> bool:

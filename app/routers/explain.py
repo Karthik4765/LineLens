@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 from datetime import datetime, time, timedelta, timezone
 from math import ceil
 
@@ -18,9 +17,10 @@ from app.llm.base import InvalidLLMResponse, LLMExplanation, ProviderUnavailable
 from app.models import Explanation, Submission, UsageLog, User
 from app.schemas import ExplainRequest, ExplainResponse, LineExplanationOut
 from app.services.analyzer import analyze_code
-from app.services.cache import get_cached_explanation, hash_code, normalize_code
+from app.services.cache import explanation_hash, get_cached_explanation, normalize_code
 from app.services.explainer import Explainer, get_explainer
 from app.services.rate_limiter import SlidingWindowRateLimiter, get_rate_limiter
+from app.services.runner import check_syntax
 
 router = APIRouter(prefix="/api", tags=["explain"])
 settings = get_settings()
@@ -65,26 +65,20 @@ def _validate_code(code: str) -> None:
             f"Code must be at most {settings.max_code_lines} lines.",
         )
 
-    try:
-        ast.parse(code, filename="<linelens>")
-    except SyntaxError as exc:
-        line = exc.lineno or 1
-        message = f"Line {line}: {exc.msg}"
+    syntax_error = check_syntax(code)
+    if syntax_error is not None:
+        line = syntax_error.line or 1
         raise APIError(
             422,
             "syntax_error",
-            message,
+            f"Line {line}: {syntax_error.message}",
             line=line,
-            syntax_message=exc.msg,
-        ) from exc
-    except ValueError as exc:
-        raise APIError(
-            422,
-            "syntax_error",
-            "Line 1: The code contains invalid characters.",
-            line=1,
-            syntax_message=str(exc),
-        ) from exc
+            column=syntax_error.column,
+            syntax_message=syntax_error.message,
+            error_type=syntax_error.type,
+            hint=syntax_error.hint,
+            phase="syntax",
+        )
 
 
 def _response(
@@ -139,7 +133,12 @@ def explain_code(
 
     _validate_code(payload.code)
     normalized = normalize_code(payload.code)
-    code_hash = hash_code(normalized)
+    error_context = (
+        payload.error_context.model_dump(exclude_none=True)
+        if payload.error_context is not None
+        else None
+    )
+    code_hash = explanation_hash(normalized, error_context)
 
     cached_explanation = get_cached_explanation(db, code_hash)
     if cached_explanation is not None:
@@ -183,7 +182,7 @@ def explain_code(
 
     analysis = analyze_code(normalized)
     try:
-        result = explainer.explain(normalized, analysis)
+        result = explainer.explain(normalized, analysis, error_context)
     except InvalidLLMResponse as exc:
         raise APIError(
             502,

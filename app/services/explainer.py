@@ -44,13 +44,18 @@ class Explainer:
     def provider_names(self) -> list[str]:
         return [provider.name for provider in self.providers]
 
-    def explain(self, code: str, analysis: dict[str, Any]) -> ExplanationResult:
+    def explain(
+        self,
+        code: str,
+        analysis: dict[str, Any],
+        error_context: dict[str, Any] | None = None,
+    ) -> ExplanationResult:
         """Return a validated explanation, falling back when appropriate."""
 
         last_error: ProviderError | None = None
         for index, provider in enumerate(self.providers):
             try:
-                explanation = provider.explain(code, analysis)
+                explanation = provider.explain(code, analysis, error_context)
                 return ExplanationResult(
                     explanation=explanation,
                     provider=provider.name,

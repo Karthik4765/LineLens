@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -50,8 +50,43 @@ class TokenResponse(BaseModel):
     user: UserOut
 
 
+class ErrorContext(BaseModel):
+    """The last failure reported by the runner, forwarded to the model as context."""
+
+    type: str = Field(min_length=1, max_length=80)
+    message: str = Field(min_length=1, max_length=500)
+    line: int | None = Field(default=None, ge=1)
+    column: int | None = Field(default=None, ge=1)
+    hint: str | None = Field(default=None, max_length=500)
+    phase: Literal["syntax", "runtime"] = "runtime"
+
+
 class ExplainRequest(BaseModel):
     code: str
+    error_context: ErrorContext | None = None
+
+
+class RunRequest(BaseModel):
+    code: str
+
+
+class RunErrorOut(BaseModel):
+    type: str
+    message: str
+    line: int | None = None
+    column: int | None = None
+    hint: str
+    phase: str
+
+
+class RunResponse(BaseModel):
+    ok: bool
+    stdout: str
+    stderr: str
+    exit_code: int | None
+    duration_ms: int
+    timed_out: bool
+    error: RunErrorOut | None = None
 
 
 class LineExplanationOut(BaseModel):

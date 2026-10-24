@@ -1,0 +1,1335 @@
+(() => {
+  "use strict";
+
+  const MAX_CHARS = 5000;
+  const MAX_LINES = 300;
+  const THEME_KEY = "linelens.theme";
+  const TOKEN_KEY = "linelens.token";
+
+  const SAMPLE_CODE = `def find_pairs(numbers, target):
+    pairs = []
+    for i in range(len(numbers)):
+        for j in range(i + 1, len(numbers)):
+            if numbers[i] + numbers[j] == target:
+                pairs.append((numbers[i], numbers[j]))
+    return pairs
+
+values = [2, 7, 11, 15, 3, 6]
+print(find_pairs(values, 9))
+`;
+
+  const byId = (id) => document.getElementById(id);
+
+  const elements = {
+    codeEditor: byId("code-editor"),
+    explainButton: byId("explain-button"),
+    runButton: byId("run-button"),
+    loadSample: byId("load-sample"),
+    lineCount: byId("line-count"),
+    charCount: byId("char-count"),
+    inlineError: byId("inline-error"),
+    errorTitle: byId("error-title"),
+    errorMessage: byId("error-message"),
+    errorCountdown: byId("error-countdown"),
+    console: byId("console"),
+    consoleStatus: byId("console-status"),
+    consoleMeta: byId("console-meta"),
+    consoleOutput: byId("console-output"),
+    consoleClear: byId("console-clear"),
+    editorPanel: document.querySelector(".editor-panel"),
+    resultPanel: byId("result-panel"),
+    resultBody: byId("result-body"),
+    resultEmpty: byId("result-empty"),
+    resultLoading: byId("result-loading"),
+    resultContent: byId("result-content"),
+    resultBadges: byId("result-badges"),
+    summaryText: byId("summary-text"),
+    resultMeta: byId("result-meta"),
+    lineList: byId("line-list"),
+    diagnosisCard: byId("diagnosis-card"),
+    diagnosisType: byId("diagnosis-type"),
+    diagnosisTitle: byId("diagnosis-title"),
+    diagnosisMessage: byId("diagnosis-message"),
+    diagnosisHint: byId("diagnosis-hint"),
+    diagnosisLine: byId("diagnosis-line"),
+    diagnosisLineNumber: byId("diagnosis-line-number"),
+    diagnosisCode: byId("diagnosis-code"),
+    themeToggle: byId("theme-toggle"),
+    themeColor: byId("theme-color"),
+    historyButton: byId("history-button"),
+    loginButton: byId("login-button"),
+    logoutButton: byId("logout-button"),
+    userEmail: byId("user-email"),
+    authDialog: byId("auth-dialog"),
+    authTitle: byId("auth-title"),
+    authSubtitle: byId("auth-subtitle"),
+    authForm: byId("auth-form"),
+    authEmail: byId("auth-email"),
+    authPassword: byId("auth-password"),
+    authError: byId("auth-error"),
+    authSubmit: byId("auth-submit"),
+    passwordHint: byId("password-hint"),
+    historyDialog: byId("history-dialog"),
+    historyBody: byId("history-body"),
+    toast: byId("toast"),
+    liveStatus: byId("live-status"),
+  };
+
+  const state = {
+    token: readStorage(TOKEN_KEY),
+    user: null,
+    currentResult: null,
+    loading: false,
+    running: false,
+    activeLine: null,
+    errorLine: null,
+    lastRunError: null,
+    lastExplain: null,
+    authMode: "login",
+    authBusy: false,
+    pendingAction: null,
+    cooldown: null,
+    toastTimer: null,
+    suppressCursorSync: false,
+  };
+
+  let editor = null;
+
+  class ApiError extends Error {
+    constructor(status, code, message, details = {}, headers = null) {
+      super(message);
+      this.name = "ApiError";
+      this.status = status;
+      this.code = code;
+      this.details = details;
+      this.headers = headers;
+    }
+  }
+
+  function readStorage(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function writeStorage(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (error) {
+      // Storage can be unavailable in private browsing; the app still works for this tab.
+    }
+  }
+
+  function removeStorage(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (error) {
+      // Ignore unavailable storage.
+    }
+  }
+
+  async function apiFetch(path, { method = "GET", body, auth = true } = {}) {
+    const headers = { Accept: "application/json" };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+    }
+    if (auth && state.token) {
+      headers.Authorization = `Bearer ${state.token}`;
+    }
+
+    let response;
+    try {
+      response = await fetch(path, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (error) {
+      throw new ApiError(
+        0,
+        "network_error",
+        "Could not reach LineLens. Check that the server is running and try again.",
+      );
+    }
+
+    const text = await response.text();
+    let data = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (error) {
+        data = null;
+      }
+    }
+
+    if (!response.ok) {
+      const detail = data && data.error ? data.error : {};
+      throw new ApiError(
+        response.status,
+        detail.code || "http_error",
+        detail.message || "Something went wrong. Please try again.",
+        detail,
+        response.headers,
+      );
+    }
+
+    return data;
+  }
+
+  function formatCount(value) {
+    return new Intl.NumberFormat().format(value);
+  }
+
+  function formatDuration(seconds) {
+    const total = Math.max(0, Math.ceil(seconds));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    if (minutes > 0) {
+      return `${minutes}m ${secs}s`;
+    }
+    return `${secs}s`;
+  }
+
+  function providerLabel(provider) {
+    if (provider === "gemini") return "Gemini";
+    if (provider === "groq") return "Groq";
+    if (provider === "fake") return "Demo";
+    return provider || "AI";
+  }
+
+  function formatDate(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return value;
+    }
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date);
+  }
+
+  function announce(message) {
+    elements.liveStatus.textContent = "";
+    window.setTimeout(() => {
+      elements.liveStatus.textContent = message;
+    }, 40);
+  }
+
+  function showToast(message) {
+    window.clearTimeout(state.toastTimer);
+    elements.toast.textContent = message;
+    elements.toast.hidden = false;
+    state.toastTimer = window.setTimeout(() => {
+      elements.toast.hidden = true;
+    }, 3000);
+  }
+
+  function prefersReducedMotion() {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function countLines(value) {
+    if (!value) return 0;
+    return value.split(/\r\n|\r|\n/).length;
+  }
+
+  function countCharacters(value) {
+    return Array.from(value).length;
+  }
+
+  function updateCounts() {
+    const value = editor ? editor.getValue() : "";
+    const lines = countLines(value);
+    const characters = countCharacters(value);
+
+    elements.lineCount.textContent = `${formatCount(lines)} / ${formatCount(MAX_LINES)} lines`;
+    elements.charCount.textContent = `${formatCount(characters)} / ${formatCount(MAX_CHARS)} characters`;
+    elements.lineCount.classList.toggle("over-limit", lines > MAX_LINES);
+    elements.charCount.classList.toggle("over-limit", characters > MAX_CHARS);
+  }
+
+  function handleEditorChange() {
+    updateCounts();
+    clearDiagnosis();
+  }
+
+  function handleCursorActivity(lineNumber) {
+    if (state.suppressCursorSync || !state.currentResult) return;
+    if (elements.resultContent.hidden) return;
+    const card = elements.lineList.querySelector(`[data-line="${lineNumber}"]`);
+    if (card) {
+      activateLine(lineNumber, { scrollEditor: false, scrollCard: true });
+    }
+  }
+
+  function createEditor() {
+    if (typeof window.CodeMirror !== "function") {
+      elements.codeEditor.classList.add("plain-editor");
+      elements.codeEditor.hidden = false;
+      showToast("Using the basic editor because CodeMirror could not load.");
+
+      return {
+        getValue: () => elements.codeEditor.value,
+        setValue(value) {
+          elements.codeEditor.value = value;
+          elements.codeEditor.dispatchEvent(new Event("input", { bubbles: true }));
+        },
+        focus: () => elements.codeEditor.focus(),
+        setCursorLine(lineNumber) {
+          const lines = elements.codeEditor.value.split("\n");
+          const offset = lines.slice(0, Math.max(0, lineNumber - 1)).join("\n").length;
+          const start = lineNumber > 1 ? offset + 1 : 0;
+          elements.codeEditor.setSelectionRange(start, start);
+        },
+        scrollToLine() {},
+        addLineClass() {},
+        removeLineClass() {},
+        onChange(callback) {
+          elements.codeEditor.addEventListener("input", callback);
+        },
+        onCursor(callback) {
+          const emit = () => {
+            const before = elements.codeEditor.value.slice(
+              0,
+              elements.codeEditor.selectionStart,
+            );
+            callback(before.split("\n").length);
+          };
+          elements.codeEditor.addEventListener("click", emit);
+          elements.codeEditor.addEventListener("keyup", emit);
+        },
+      };
+    }
+
+    const cm = window.CodeMirror.fromTextArea(elements.codeEditor, {
+      mode: { name: "python", version: 3 },
+      theme: "linelens",
+      lineNumbers: true,
+      lineWrapping: true,
+      indentUnit: 4,
+      tabSize: 4,
+      indentWithTabs: false,
+      styleActiveLine: true,
+      matchBrackets: true,
+      viewportMargin: Infinity,
+      placeholder: "Paste your Python code here...",
+      extraKeys: {
+        "Ctrl-Enter": () => runExplain(),
+        "Cmd-Enter": () => runExplain(),
+        "Shift-Enter": () => runCode(),
+      },
+    });
+    cm.setSize("100%", "100%");
+    cm.getInputField().setAttribute("aria-label", "Python code editor");
+
+    return {
+      getValue: () => cm.getValue(),
+      setValue(value) {
+        cm.setValue(value);
+        cm.clearHistory();
+      },
+      focus: () => cm.focus(),
+      setCursorLine(lineNumber) {
+        const line = Math.max(0, Math.min(lineNumber - 1, cm.lineCount() - 1));
+        cm.setCursor({ line, ch: 0 });
+      },
+      scrollToLine(lineNumber) {
+        const line = Math.max(0, Math.min(lineNumber - 1, cm.lineCount() - 1));
+        cm.scrollIntoView({ line, ch: 0 }, 80);
+      },
+      addLineClass(lineNumber, className) {
+        if (lineNumber >= 1 && lineNumber <= cm.lineCount()) {
+          cm.addLineClass(lineNumber - 1, "background", className);
+        }
+      },
+      removeLineClass(lineNumber, className) {
+        if (lineNumber >= 1 && lineNumber <= cm.lineCount()) {
+          cm.removeLineClass(lineNumber - 1, "background", className);
+        }
+      },
+      onChange(callback) {
+        cm.on("change", callback);
+      },
+      onCursor(callback) {
+        cm.on("cursorActivity", () => {
+          if (!state.suppressCursorSync) {
+            callback(cm.getCursor().line + 1);
+          }
+        });
+      },
+    };
+  }
+
+  function applyTheme(theme, persist) {
+    const next = theme === "dark" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    document.documentElement.style.colorScheme = next;
+    elements.themeColor.setAttribute("content", next === "dark" ? "#1A1918" : "#FAF9F5");
+    elements.themeToggle.setAttribute(
+      "aria-label",
+      next === "dark" ? "Switch to light theme" : "Switch to dark theme",
+    );
+    elements.themeToggle.title = next === "dark" ? "Switch to light theme" : "Switch to dark theme";
+    if (persist) {
+      writeStorage(THEME_KEY, next);
+    }
+  }
+
+  function updateAuthUi() {
+    const loggedIn = Boolean(state.token);
+    elements.loginButton.hidden = loggedIn;
+    elements.logoutButton.hidden = !loggedIn;
+    elements.userEmail.hidden = !loggedIn || !state.user;
+    elements.userEmail.textContent = state.user ? state.user.email : "";
+    elements.userEmail.title = state.user ? state.user.email : "";
+  }
+
+  function saveSession(payload) {
+    state.token = payload.access_token;
+    state.user = payload.user;
+    writeStorage(TOKEN_KEY, state.token);
+    updateAuthUi();
+  }
+
+  function clearSession() {
+    state.token = null;
+    state.user = null;
+    removeStorage(TOKEN_KEY);
+    updateAuthUi();
+  }
+
+  function setAuthMode(mode) {
+    state.authMode = mode === "register" ? "register" : "login";
+    const isRegister = state.authMode === "register";
+
+    document.querySelectorAll("[data-auth-mode]").forEach((button) => {
+      const active = button.dataset.authMode === state.authMode;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+
+    elements.authTitle.textContent = isRegister ? "Create your account" : "Welcome back";
+    elements.authSubtitle.textContent = isRegister
+      ? "Start explaining code and keep a private history."
+      : "Log in to explain code and keep a private history.";
+    elements.authPassword.autocomplete = isRegister ? "new-password" : "current-password";
+    elements.authPassword.minLength = isRegister ? 8 : 1;
+    elements.passwordHint.hidden = !isRegister;
+    elements.authSubmit.querySelector(".button-label").textContent = isRegister
+      ? "Create account"
+      : "Log in";
+    elements.authError.hidden = true;
+  }
+
+  function openAuth(mode = "login", pendingAction = null, message = "") {
+    state.pendingAction = pendingAction;
+    setAuthMode(mode);
+    if (message) {
+      showAuthError(message);
+    }
+    if (!elements.authDialog.open) {
+      elements.authDialog.showModal();
+    }
+    window.setTimeout(() => elements.authEmail.focus(), 50);
+  }
+
+  function showAuthError(message) {
+    elements.authError.textContent = message;
+    elements.authError.hidden = false;
+  }
+
+  function setAuthBusy(busy) {
+    state.authBusy = busy;
+    elements.authSubmit.disabled = busy;
+    elements.authSubmit.querySelector(".button-spinner").hidden = !busy;
+    elements.authSubmit.querySelector(".button-label").textContent = busy
+      ? (state.authMode === "register" ? "Creating account" : "Logging in")
+      : (state.authMode === "register" ? "Create account" : "Log in");
+  }
+
+  function handleUnauthorized(pendingAction) {
+    clearSession();
+    if (elements.historyDialog.open) {
+      elements.historyDialog.close();
+    }
+    openAuth("login", pendingAction, "Your session expired. Log in to continue.");
+  }
+
+  function clearErrorLine() {
+    if (state.errorLine !== null) {
+      editor.removeLineClass(state.errorLine, "cm-error-line");
+      state.errorLine = null;
+    }
+  }
+
+  function clearInlineError() {
+    stopCooldown();
+    elements.inlineError.hidden = true;
+    elements.errorTitle.textContent = "";
+    elements.errorMessage.textContent = "";
+    elements.errorCountdown.hidden = true;
+    clearErrorLine();
+    updateExplainButton();
+  }
+
+  function clearTransientError() {
+    if (!state.cooldown) {
+      clearInlineError();
+    }
+  }
+
+  function showInlineError(title, message, { seconds = null, disableButton = false } = {}) {
+    elements.errorTitle.textContent = title;
+    elements.errorMessage.textContent = message;
+    elements.inlineError.hidden = false;
+    if (Number.isFinite(seconds) && seconds > 0) {
+      startCooldown(seconds, disableButton);
+    } else {
+      elements.errorCountdown.hidden = true;
+      updateExplainButton();
+    }
+  }
+
+  function startCooldown(seconds, disableButton) {
+    stopCooldown();
+    const until = Date.now() + Math.max(1, seconds) * 1000;
+    state.cooldown = { until, disableButton, timer: null };
+
+    const tick = () => {
+      if (!state.cooldown) return;
+      const remaining = Math.ceil((state.cooldown.until - Date.now()) / 1000);
+      if (remaining <= 0) {
+        const shouldHide = state.cooldown.disableButton;
+        window.clearInterval(state.cooldown.timer);
+        state.cooldown = null;
+        elements.errorCountdown.hidden = true;
+        if (shouldHide) {
+          elements.inlineError.hidden = true;
+        }
+        updateExplainButton();
+        return;
+      }
+      elements.errorCountdown.hidden = false;
+      elements.errorCountdown.textContent = `Try again in ${formatDuration(remaining)}.`;
+      updateExplainButton();
+    };
+
+    tick();
+    if (state.cooldown) {
+      state.cooldown.timer = window.setInterval(tick, 1000);
+    }
+  }
+
+  function stopCooldown() {
+    if (state.cooldown) {
+      window.clearInterval(state.cooldown.timer);
+      state.cooldown = null;
+    }
+    elements.errorCountdown.hidden = true;
+  }
+
+  function updateExplainButton() {
+    const label = elements.explainButton.querySelector(".button-label");
+    const spinner = elements.explainButton.querySelector(".button-spinner");
+
+    if (state.loading) {
+      elements.explainButton.disabled = true;
+      label.textContent = "Explaining";
+      spinner.hidden = false;
+      return;
+    }
+
+    spinner.hidden = true;
+    if (state.cooldown && state.cooldown.disableButton) {
+      const remaining = Math.ceil((state.cooldown.until - Date.now()) / 1000);
+      if (remaining > 0) {
+        elements.explainButton.disabled = true;
+        label.textContent = `Try again in ${formatDuration(remaining)}`;
+        return;
+      }
+    }
+
+    elements.explainButton.disabled = false;
+    label.textContent = "Explain";
+  }
+
+  function setLoading(loading) {
+    state.loading = loading;
+    elements.resultPanel.setAttribute("aria-busy", String(loading));
+    if (loading) {
+      elements.resultEmpty.hidden = true;
+      elements.resultContent.hidden = true;
+      elements.resultLoading.hidden = false;
+    } else {
+      elements.resultLoading.hidden = true;
+      if (state.currentResult) {
+        elements.resultContent.hidden = false;
+        elements.resultEmpty.hidden = true;
+      } else if (!elements.diagnosisCard.hidden) {
+        elements.resultContent.hidden = true;
+        elements.resultEmpty.hidden = true;
+      } else {
+        elements.resultContent.hidden = true;
+        elements.resultEmpty.hidden = false;
+      }
+    }
+    updateExplainButton();
+  }
+
+  function clearResult() {
+    state.currentResult = null;
+    if (state.activeLine !== null) {
+      editor.removeLineClass(state.activeLine, "cm-selected-line");
+      state.activeLine = null;
+    }
+    elements.lineList.replaceChildren();
+    elements.resultBadges.replaceChildren();
+    elements.resultBadges.hidden = true;
+    elements.resultContent.hidden = true;
+    elements.resultLoading.hidden = true;
+    elements.resultEmpty.hidden = false;
+    elements.summaryText.textContent = "";
+    elements.resultMeta.textContent = "";
+  }
+
+  function makeBadge(text, className, { dot = false, title = "" } = {}) {
+    const badge = document.createElement("span");
+    badge.className = `badge ${className}`;
+    if (title) badge.title = title;
+    if (dot) {
+      const dotElement = document.createElement("span");
+      dotElement.className = "badge-dot";
+      dotElement.setAttribute("aria-hidden", "true");
+      badge.append(dotElement);
+    }
+    badge.append(document.createTextNode(text));
+    return badge;
+  }
+
+  function renderBadges(result) {
+    elements.resultBadges.replaceChildren();
+    const complexity = result.analysis && result.analysis.complexity_hint;
+    if (complexity) {
+      elements.resultBadges.append(
+        makeBadge(complexity, "badge-complexity", {
+          dot: true,
+          title: "Rough complexity hint derived from AST loop nesting.",
+        }),
+      );
+    }
+    if (result.cached) {
+      elements.resultBadges.append(
+        makeBadge("Cached", "badge-cached", {
+          title: "This explanation was reused from the content cache.",
+        }),
+      );
+    }
+    const providerTitle = result.provider === "fake"
+      ? "No API key configured, so LineLens used its deterministic local provider."
+      : `Generated with ${providerLabel(result.provider)}.`;
+    elements.resultBadges.append(
+      makeBadge(
+        result.provider === "fake" ? "Demo" : providerLabel(result.provider),
+        "badge-provider",
+        { title: providerTitle },
+      ),
+    );
+    elements.resultBadges.hidden = false;
+  }
+
+  function renderResult(result) {
+    state.currentResult = result;
+    if (state.activeLine !== null) {
+      editor.removeLineClass(state.activeLine, "cm-selected-line");
+      state.activeLine = null;
+    }
+
+    elements.summaryText.textContent = result.summary;
+    elements.resultMeta.textContent = `${formatCount(result.lines.length)} ${
+      result.lines.length === 1 ? "line" : "lines"
+    } explained`;
+    renderBadges(result);
+
+    const fragment = document.createDocumentFragment();
+    for (const item of result.lines) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "line-card";
+      card.dataset.line = String(item.line);
+      card.setAttribute("aria-pressed", "false");
+
+      const chip = document.createElement("span");
+      chip.className = "line-chip";
+      chip.textContent = String(item.line);
+
+      const body = document.createElement("span");
+      body.className = "line-body";
+
+      const code = document.createElement("code");
+      code.className = "line-code";
+      code.textContent = item.code;
+
+      const explanation = document.createElement("span");
+      explanation.className = "line-explanation";
+      explanation.textContent = item.explanation;
+
+      body.append(code, explanation);
+      card.append(chip, body);
+      card.addEventListener("click", () => {
+        activateLine(item.line, { scrollEditor: true, scrollCard: false });
+      });
+      fragment.append(card);
+    }
+
+    if (result.lines.length === 0) {
+      const note = document.createElement("p");
+      note.className = "result-note";
+      note.textContent = "There were no non-blank lines to explain individually.";
+      fragment.append(note);
+    }
+
+    elements.lineList.replaceChildren(fragment);
+    elements.resultEmpty.hidden = true;
+    elements.resultLoading.hidden = true;
+    elements.resultContent.hidden = false;
+    announce(`Explanation ready. ${result.lines.length} lines explained.`);
+  }
+
+  function activateLine(lineNumber, { scrollEditor = false, scrollCard = true } = {}) {
+    if (!state.currentResult) return;
+    const card = elements.lineList.querySelector(`[data-line="${lineNumber}"]`);
+    if (!card) return;
+
+    if (scrollEditor) {
+      state.suppressCursorSync = true;
+      editor.setCursorLine(lineNumber);
+      editor.scrollToLine(lineNumber);
+      state.suppressCursorSync = false;
+    }
+
+    if (state.activeLine !== null) {
+      editor.removeLineClass(state.activeLine, "cm-selected-line");
+    }
+    editor.addLineClass(lineNumber, "cm-selected-line");
+    state.activeLine = lineNumber;
+
+    elements.lineList.querySelectorAll(".line-card").forEach((other) => {
+      const active = other === card;
+      other.classList.toggle("is-active", active);
+      other.setAttribute("aria-pressed", String(active));
+    });
+
+    if (scrollCard) {
+      card.scrollIntoView({
+        block: "nearest",
+        behavior: prefersReducedMotion() ? "auto" : "smooth",
+      });
+    }
+  }
+
+  function highlightErrorLine(lineNumber) {
+    if (!Number.isInteger(lineNumber)) return;
+    if (state.errorLine !== null) {
+      editor.removeLineClass(state.errorLine, "cm-error-line");
+    }
+    editor.addLineClass(lineNumber, "cm-error-line");
+    state.errorLine = lineNumber;
+    editor.scrollToLine(lineNumber);
+  }
+
+  function clearErrorLine() {
+    if (state.errorLine !== null) {
+      editor.removeLineClass(state.errorLine, "cm-error-line");
+      state.errorLine = null;
+    }
+  }
+
+  function clearDiagnosis() {
+    elements.diagnosisCard.hidden = true;
+    elements.diagnosisType.textContent = "";
+    elements.diagnosisTitle.textContent = "";
+    elements.diagnosisMessage.textContent = "";
+    elements.diagnosisHint.textContent = "";
+    elements.diagnosisLine.hidden = true;
+    elements.diagnosisLineNumber.textContent = "";
+    elements.diagnosisCode.textContent = "";
+    state.lastRunError = null;
+    clearErrorLine();
+    if (!state.currentResult && !state.running && !state.loading) {
+      elements.resultEmpty.hidden = false;
+    }
+  }
+
+  function showDiagnosis(error) {
+    if (!error || !error.type) return;
+
+    const line = Number(error.line);
+    const hasLine = Number.isInteger(line) && line > 0;
+    const message = error.message || "The code stopped with an error.";
+    const hint = error.hint || "";
+
+    elements.diagnosisType.textContent = error.type;
+    elements.diagnosisTitle.textContent = hasLine
+      ? `Line ${line} needs attention`
+      : "The program could not finish";
+    elements.diagnosisMessage.textContent = message;
+    elements.diagnosisHint.textContent = hint;
+    elements.diagnosisHint.hidden = !hint;
+
+    if (hasLine) {
+      const sourceLines = editor.getValue().split(/\r\n|\r|\n/);
+      const source = sourceLines[line - 1] || "";
+      elements.diagnosisLineNumber.textContent = String(line);
+      elements.diagnosisCode.textContent = source || "(blank line)";
+      elements.diagnosisLine.hidden = false;
+      highlightErrorLine(line);
+    } else {
+      elements.diagnosisLine.hidden = true;
+      clearErrorLine();
+    }
+
+    state.lastRunError = {
+      type: error.type,
+      message,
+      line: hasLine ? line : undefined,
+      column: error.column ? Number(error.column) : undefined,
+      hint: hint || undefined,
+      phase: error.phase === "syntax" ? "syntax" : "runtime",
+    };
+
+    elements.diagnosisCard.hidden = false;
+    elements.resultEmpty.hidden = true;
+    announce(
+      `Code check found ${error.type}${hasLine ? ` on line ${line}` : ""}.`,
+    );
+  }
+
+  function showConsole({ status, tone = "", meta = "", output = "" }) {
+    elements.console.hidden = false;
+    elements.editorPanel.classList.add("has-console");
+    elements.consoleStatus.textContent = status;
+    elements.consoleStatus.className = `console-status${tone ? ` is-${tone}` : ""}`;
+    elements.consoleMeta.textContent = meta;
+    elements.consoleOutput.textContent = output;
+  }
+
+  function clearConsole() {
+    elements.console.hidden = true;
+    elements.editorPanel.classList.remove("has-console");
+    elements.consoleStatus.textContent = "";
+    elements.consoleStatus.className = "console-status";
+    elements.consoleMeta.textContent = "";
+    elements.consoleOutput.textContent = "";
+  }
+
+  function renderRunResult(result) {
+    const sections = [];
+    if (result.stdout) {
+      sections.push(result.stdout.replace(/\s+$/, ""));
+    }
+    if (result.stderr) {
+      sections.push(result.stderr.replace(/\s+$/, ""));
+    }
+    let output = sections.join("\n\n");
+    if (!output) {
+      output = result.ok
+        ? "(The program finished without printing anything.)"
+        : "(No output was captured.)";
+    }
+
+    const status = result.timed_out ? "Timed out" : result.ok ? "Finished" : "Error";
+    const metaParts = [];
+    if (result.error && result.error.phase === "syntax") {
+      metaParts.push("syntax check");
+    } else {
+      metaParts.push(`${formatCount(result.duration_ms)} ms`);
+    }
+    if (result.exit_code !== null && result.exit_code !== undefined) {
+      metaParts.push(`exit ${result.exit_code}`);
+    }
+    showConsole({
+      status,
+      tone: result.ok ? "ok" : "error",
+      meta: metaParts.join(" · "),
+      output,
+    });
+
+    if (result.error) {
+      showDiagnosis(result.error);
+    } else {
+      clearDiagnosis();
+      announce("Run finished successfully.");
+    }
+  }
+
+  function setRunLoading(running) {
+    state.running = running;
+    const label = elements.runButton.querySelector(".button-label");
+    const spinner = elements.runButton.querySelector(".button-spinner");
+    elements.runButton.disabled = running;
+    label.textContent = running ? "Running" : "Run";
+    spinner.hidden = !running;
+  }
+
+  async function runCode() {
+    if (state.running) return;
+    if (!state.token) {
+      openAuth("login", "run");
+      return;
+    }
+
+    const code = editor.getValue();
+    const validation = localValidationError(code, "run");
+    if (validation) {
+      showInlineError(validation[0], validation[1]);
+      editor.focus();
+      return;
+    }
+
+    clearTransientError();
+    clearDiagnosis();
+    setRunLoading(true);
+    showConsole({ status: "Running", output: "Running your code..." });
+
+    try {
+      const data = await apiFetch("/api/run", {
+        method: "POST",
+        body: { code },
+      });
+      renderRunResult(data);
+    } catch (error) {
+      if (error.status === 401) {
+        showConsole({
+          status: "Paused",
+          output: "Log in to run your code.",
+        });
+        handleUnauthorized("run");
+        return;
+      }
+
+      const message = error.message || "Please try again shortly.";
+      showConsole({ status: "Error", tone: "error", output: message });
+      if (error.code === "rate_limited") {
+        const seconds = Number(
+          error.details.retry_after || error.headers?.get("Retry-After") || 60,
+        );
+        showInlineError(
+          "A short pause",
+          `You have run code too many times in the last minute. Try again in ${formatDuration(seconds)}.`,
+        );
+      } else {
+        showInlineError("Could not run that code", message);
+      }
+    } finally {
+      setRunLoading(false);
+    }
+  }
+
+  function localValidationError(code, action = "explain") {
+    const isRun = action === "run";
+    if (!code.trim()) {
+      return isRun
+        ? ["Nothing to run yet", "Paste a Python snippet before pressing Run."]
+        : ["Nothing to explain yet", "Paste a Python snippet before pressing Explain."];
+    }
+    if (countCharacters(code) > MAX_CHARS) {
+      return [
+        "Code is too long",
+        `Keep the snippet under ${formatCount(MAX_CHARS)} characters so ${
+          isRun ? "it runs quickly" : "the explanation stays useful"
+        }.`,
+      ];
+    }
+    if (countLines(code) > MAX_LINES) {
+      return [
+        "Too many lines",
+        `Keep the snippet under ${formatCount(MAX_LINES)} lines so ${
+          isRun ? "it runs quickly" : "the explanation stays useful"
+        }.`,
+      ];
+    }
+    return null;
+  }
+
+  async function runExplain() {
+    if (state.loading) return;
+    if (state.cooldown && state.cooldown.disableButton && Date.now() < state.cooldown.until) {
+      return;
+    }
+    if (!state.token) {
+      openAuth("login", "explain");
+      return;
+    }
+
+    const code = editor.getValue();
+    const validation = localValidationError(code);
+    if (validation) {
+      showInlineError(validation[0], validation[1]);
+      editor.focus();
+      return;
+    }
+    if (
+      state.lastExplain &&
+      state.lastExplain.code === code &&
+      Date.now() - state.lastExplain.at < 800
+    ) {
+      return;
+    }
+
+    clearInlineError();
+    setLoading(true);
+    elements.resultEmpty.hidden = true;
+    state.lastExplain = { code, at: Date.now() };
+
+    try {
+      const body = { code };
+      if (state.lastRunError) {
+        body.error_context = state.lastRunError;
+      }
+      const data = await apiFetch("/api/explain", {
+        method: "POST",
+        body,
+      });
+      renderResult(data);
+      showToast(data.cached ? "Loaded from the cache." : "Explanation ready.");
+    } catch (error) {
+      if (error.status === 401) {
+        handleUnauthorized("explain");
+        return;
+      }
+
+      if (error.code === "syntax_error") {
+        const details = error.details || {};
+        showDiagnosis({
+          type: details.error_type || "SyntaxError",
+          message: details.syntax_message || error.message,
+          line: details.line,
+          column: details.column,
+          hint: details.hint,
+          phase: "syntax",
+        });
+        showInlineError("Syntax error", error.message);
+      } else if (error.code === "rate_limited") {
+        const seconds = Number(
+          error.details.retry_after || error.headers?.get("Retry-After") || 60,
+        );
+        showInlineError(
+          "A short pause",
+          "You have sent 10 requests in the last minute. Take a breath, then try again.",
+          { seconds, disableButton: true },
+        );
+      } else if (error.code === "daily_limit_reached") {
+        const seconds = Number(
+          error.details.retry_after || error.headers?.get("Retry-After") || 3600,
+        );
+        showInlineError(
+          "Daily AI limit reached",
+          "Cached explanations still work. New AI explanations resume tomorrow.",
+          { seconds, disableButton: false },
+        );
+      } else if (error.code === "invalid_ai_response") {
+        showInlineError(
+          "The AI response was malformed",
+          "The provider did not return usable JSON after a retry. Please try again.",
+        );
+      } else if (error.status >= 500) {
+        showInlineError(
+          "The explanation service is unavailable",
+          error.message || "Please try again shortly.",
+        );
+      } else {
+        showInlineError("Could not explain that code", error.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openHistory() {
+    if (!state.token) {
+      openAuth("login", "history");
+      return;
+    }
+    if (!elements.historyDialog.open) {
+      elements.historyDialog.showModal();
+    }
+    void loadHistory();
+  }
+
+  function historyLoading() {
+    const wrap = document.createElement("div");
+    wrap.className = "history-state";
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const text = document.createElement("p");
+    text.textContent = "Fetching your explanations...";
+    wrap.append(spinner, text);
+    elements.historyBody.replaceChildren(wrap);
+  }
+
+  function historyMessage(message, { error = false, retry = false } = {}) {
+    const wrap = document.createElement("div");
+    wrap.className = `history-state${error ? " history-error" : ""}`;
+    const text = document.createElement("p");
+    text.textContent = message;
+    wrap.append(text);
+    if (retry) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "text-button";
+      button.textContent = "Try again";
+      button.addEventListener("click", () => void loadHistory());
+      wrap.append(button);
+    }
+    elements.historyBody.replaceChildren(wrap);
+  }
+
+  async function loadHistory() {
+    historyLoading();
+    try {
+      const data = await apiFetch("/api/history");
+      if (!data.items.length) {
+        historyMessage("No explanations yet. Run your first one and it will appear here.");
+        return;
+      }
+
+      const list = document.createElement("div");
+      list.className = "history-list";
+      for (const item of data.items) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "history-item";
+
+        const summary = document.createElement("span");
+        summary.className = "history-summary";
+        summary.textContent = item.summary;
+
+        const meta = document.createElement("span");
+        meta.className = "history-meta";
+        const lineLabel = item.line_count === 1 ? "line" : "lines";
+        meta.textContent = `${formatDate(item.created_at)} · ${item.line_count} ${lineLabel} · ${providerLabel(item.provider)}`;
+
+        button.append(summary, meta);
+        button.addEventListener("click", () => void openHistoryItem(item.id, button));
+        list.append(button);
+      }
+      elements.historyBody.replaceChildren(list);
+    } catch (error) {
+      if (error.status === 401) {
+        handleUnauthorized("history");
+        return;
+      }
+      historyMessage(
+        error.status === 0
+          ? error.message
+          : "Could not load your history. Please try again.",
+        { error: true, retry: true },
+      );
+    }
+  }
+
+  async function openHistoryItem(id, button) {
+    button.disabled = true;
+    try {
+      const detail = await apiFetch(`/api/history/${id}`);
+      editor.setValue(detail.code);
+      clearTransientError();
+      clearDiagnosis();
+      clearConsole();
+      renderResult(detail);
+      elements.historyDialog.close();
+      announce("Explanation opened from history.");
+      if (window.matchMedia("(max-width: 900px)").matches) {
+        elements.resultPanel.scrollIntoView({
+          behavior: prefersReducedMotion() ? "auto" : "smooth",
+          block: "start",
+        });
+      }
+    } catch (error) {
+      if (error.status === 401) {
+        handleUnauthorized("history");
+        return;
+      }
+      showToast(
+        error.status === 404
+          ? "That explanation could not be found."
+          : "Could not open that explanation. Please try again.",
+      );
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function restoreSession() {
+    if (!state.token) {
+      updateAuthUi();
+      return;
+    }
+
+    updateAuthUi();
+    try {
+      const user = await apiFetch("/api/auth/me");
+      state.user = user;
+      updateAuthUi();
+    } catch (error) {
+      if (error.status === 401) {
+        clearSession();
+      }
+    }
+  }
+
+  async function submitAuth(event) {
+    event.preventDefault();
+    if (state.authBusy) return;
+
+    const email = elements.authEmail.value.trim();
+    const password = elements.authPassword.value;
+    elements.authError.hidden = true;
+    setAuthBusy(true);
+
+    try {
+      const payload = await apiFetch(`/api/auth/${state.authMode}`, {
+        method: "POST",
+        auth: false,
+        body: { email, password },
+      });
+      saveSession(payload);
+      const pendingAction = state.pendingAction;
+      state.pendingAction = null;
+      elements.authForm.reset();
+      elements.authDialog.close();
+      showToast(`Logged in as ${payload.user.email}.`);
+      announce("Logged in.");
+
+      if (pendingAction === "explain") {
+        window.setTimeout(() => void runExplain(), 60);
+      } else if (pendingAction === "run") {
+        window.setTimeout(() => void runCode(), 60);
+      } else if (pendingAction === "history") {
+        window.setTimeout(() => openHistory(), 60);
+      }
+    } catch (error) {
+      let message = error.message;
+      if (error.status === 422 && error.details.fields && error.details.fields.length) {
+        const field = error.details.fields[0];
+        message = field.field === "email"
+          ? "Enter a valid email address."
+          : field.field === "password"
+            ? "Password must be at least 8 characters."
+            : field.message;
+      }
+      showAuthError(message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  function bindEvents() {
+    elements.explainButton.addEventListener("click", () => void runExplain());
+    elements.runButton.addEventListener("click", () => void runCode());
+    elements.consoleClear.addEventListener("click", () => {
+      clearConsole();
+      announce("Output cleared.");
+    });
+    elements.loadSample.addEventListener("click", () => {
+      editor.setValue(SAMPLE_CODE);
+      clearResult();
+      clearTransientError();
+      clearDiagnosis();
+      clearConsole();
+      editor.focus();
+      announce("Sample code loaded.");
+    });
+
+    elements.themeToggle.addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      applyTheme(next, true);
+    });
+
+    const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+    if (typeof systemTheme.addEventListener === "function") {
+      systemTheme.addEventListener("change", (event) => {
+        if (!readStorage(THEME_KEY)) {
+          applyTheme(event.matches ? "dark" : "light", false);
+        }
+      });
+    }
+
+    elements.loginButton.addEventListener("click", () => openAuth("login"));
+    elements.logoutButton.addEventListener("click", () => {
+      clearSession();
+      if (elements.historyDialog.open) elements.historyDialog.close();
+      showToast("Logged out.");
+      announce("Logged out.");
+    });
+    elements.historyButton.addEventListener("click", openHistory);
+
+    document.querySelectorAll("[data-auth-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!state.authBusy) {
+          setAuthMode(button.dataset.authMode);
+          elements.authEmail.focus();
+        }
+      });
+    });
+
+    elements.authForm.addEventListener("submit", (event) => void submitAuth(event));
+
+    document.querySelectorAll("[data-close-dialog]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const dialog = byId(button.dataset.closeDialog);
+        if (dialog && dialog.open) dialog.close();
+      });
+    });
+
+    for (const dialog of [elements.authDialog, elements.historyDialog]) {
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) {
+          dialog.close();
+        }
+      });
+      dialog.addEventListener("close", () => {
+        if (dialog === elements.authDialog) {
+          state.pendingAction = null;
+          elements.authError.hidden = true;
+        }
+      });
+    }
+
+    elements.codeEditor.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      if (event.shiftKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        void runCode();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey) {
+        event.preventDefault();
+        void runExplain();
+      }
+    });
+  }
+
+  function init() {
+    applyTheme(document.documentElement.dataset.theme, false);
+    editor = createEditor();
+    editor.onChange(handleEditorChange);
+    editor.onCursor(handleCursorActivity);
+    updateCounts();
+    updateAuthUi();
+    bindEvents();
+    void restoreSession();
+  }
+
+  init();
+})();
