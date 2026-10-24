@@ -19,8 +19,10 @@ os.environ["GROQ_API_KEY"] = ""
 import pytest
 from fastapi.testclient import TestClient
 
-from app.database import Base, engine
+from app.database import Base, SessionLocal, engine
+from app.llm.fake import FakeProvider
 from app.main import app
+from app.services.explainer import Explainer, get_explainer
 
 if TEST_DB_PATH.exists():
     TEST_DB_PATH.unlink()
@@ -56,3 +58,31 @@ def user_token(client: TestClient) -> str:
 @pytest.fixture
 def auth_headers(user_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {user_token}"}
+
+
+@pytest.fixture
+def fake_provider():
+    """Install a fresh fake provider for a test and expose it for call counts."""
+
+    provider = FakeProvider()
+    app.dependency_overrides[get_explainer] = lambda: Explainer([provider])
+    yield provider
+    app.dependency_overrides.pop(get_explainer, None)
+
+
+@pytest.fixture
+def set_explainer():
+    """Install a custom explainer (used for retry and fallback tests)."""
+
+    def install(explainer: Explainer) -> Explainer:
+        app.dependency_overrides[get_explainer] = lambda: explainer
+        return explainer
+
+    yield install
+    app.dependency_overrides.pop(get_explainer, None)
+
+
+@pytest.fixture
+def db_session():
+    with SessionLocal() as session:
+        yield session

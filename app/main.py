@@ -13,7 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import get_settings
 from app.database import init_db
 from app.errors import APIError
-from app.routers import auth
+from app.routers import auth, explain
 from app.schemas import HealthResponse
 
 logger = logging.getLogger("linelens")
@@ -106,6 +106,7 @@ def create_app() -> FastAPI:
         return HealthResponse(status="ok")
 
     app.include_router(auth.router)
+    app.include_router(explain.router)
     return app
 
 
